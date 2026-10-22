@@ -96,7 +96,7 @@ def garch_forecasts(ds, start, end):
         return None
     b = pd.read_parquet(C.DATA / "bars_5m.parquet", columns=["r"])
     seas = pd.read_parquet(C.DATA / "seasonality.parquet")["seas"].values
-    bucket = (b.index.dayofweek * 288 + b.index.hour * 12 + b.index.minute // 5).values
+    bucket = (b.index.day_of_week * 288 + b.index.hour * 12 + b.index.minute // 5).values
     b["seas"] = seas[bucket]
     hr = b.resample("1h").agg({"r": "sum", "seas": "mean"})
     z = (hr["r"] / np.sqrt(hr["seas"])) * 100        # Prozent, saisonbereinigt

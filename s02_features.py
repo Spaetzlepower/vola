@@ -42,7 +42,7 @@ def seasonality(b):
     pre = b[(b.index < cutoff) & ~b["missing"]]
     r2 = pre["r"] ** 2
     r2 = r2.clip(upper=r2.quantile(0.999))           # Ausreißer dämpfen
-    bucket = pre.index.dayofweek * 288 + pre.index.hour * 12 + pre.index.minute // 5
+    bucket = pre.index.day_of_week * 288 + pre.index.hour * 12 + pre.index.minute // 5
     prof = r2.groupby(bucket).mean().reindex(range(2016)).interpolate().bfill().ffill()
     prof = pd.Series(np.convolve(np.r_[prof.values[-3:], prof.values, prof.values[:3]], np.ones(7) / 7, "valid"))
     prof = prof / prof.mean()
@@ -59,7 +59,7 @@ def fwd_window(x, n, fn):
 
 def build(b, prof):
     idx = b.index
-    bucket = (idx.dayofweek * 288 + idx.hour * 12 + idx.minute // 5).values
+    bucket = (idx.day_of_week * 288 + idx.hour * 12 + idx.minute // 5).values
     seas = prof[bucket]
     r2 = b["r"].values ** 2
     f = pd.DataFrame(index=idx)
@@ -97,7 +97,7 @@ def build(b, prof):
     # --- zur Prognosezeit bekannte Größen ---
     f["S0"] = b["close"].shift(1)
     f["hour"] = idx.hour
-    f["weekday"] = idx.dayofweek
+    f["weekday"] = idx.day_of_week
     f["seas_now"] = np.log(seas)
     for h in C.HORIZONS_H:
         n = h * H

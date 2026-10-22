@@ -97,7 +97,7 @@ def candidate_slugs(monday):
 def find_events(weeks_back):
     events = {}
     today = pd.Timestamp.now(tz="UTC").normalize()
-    monday0 = today - pd.Timedelta(days=today.dayofweek)
+    monday0 = today - pd.Timedelta(days=today.day_of_week)
     for k in range(weeks_back):
         mon = (monday0 - pd.Timedelta(weeks=k)).date()
         for slug in candidate_slugs(mon):

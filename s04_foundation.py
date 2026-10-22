@@ -34,7 +34,7 @@ DEV = "cuda" if torch.cuda.is_available() else "cpu"
 def hourly_series():
     b = pd.read_parquet(C.DATA / "bars_5m.parquet")
     seas = pd.read_parquet(C.DATA / "seasonality.parquet")["seas"].values
-    bucket = (b.index.dayofweek * 288 + b.index.hour * 12 + b.index.minute // 5).values
+    bucket = (b.index.day_of_week * 288 + b.index.hour * 12 + b.index.minute // 5).values
     b["seas"] = seas[bucket]
     b["r2"] = b["r"] ** 2
     hr = b.resample("1h").agg({"r2": "sum", "seas": "mean"})
@@ -46,7 +46,7 @@ def hourly_series():
 def seas_hour_future(origin, n):
     seas = pd.read_parquet(C.DATA / "seasonality.parquet")["seas"].values
     t = pd.date_range(origin, periods=n * H, freq="5min")
-    v = seas[(t.dayofweek * 288 + t.hour * 12 + t.minute // 5).values]
+    v = seas[(t.day_of_week * 288 + t.hour * 12 + t.minute // 5).values]
     return v.reshape(n, H).mean(1)
 
 
@@ -136,14 +136,15 @@ def load_kronos(size, dry):
     return KronosPredictor(mod.eval(), tok.eval(), device=DEV, max_context=ctx), ctx
 
 
-def run_kronos(bars5, origins, size, n_paths, bs, dry):
-    """Gibt (vol dict h->var, touch DataFrame) zurück."""
+def run_kronos(bars5, origins, size, n_paths, bs, dry, max_h):
+    """Gibt (vol dict h->var, touch DataFrame) zurück.
+    Autoregressiv = teuer: 5m-Kerzen nur bis 4h (48 Schritte), darüber 1h-Kerzen bis max_h."""
     pred, ctx = load_kronos(size, dry)
     ohlc = ["open", "high", "low", "close", "volume", "quote_volume"]
     bars1h = bars5[ohlc].resample("1h").agg({"open": "first", "high": "max", "low": "min", "close": "last",
                                               "volume": "sum", "quote_volume": "sum"}).dropna()
-    groups = [(bars5, "5min", [h for h in C.HORIZONS_H if h <= 24]),
-              (bars1h, "1h", [h for h in C.HORIZONS_H if h > 24])]
+    groups = [(bars5, "5min", [h for h in C.HORIZONS_H if h <= 4]),
+              (bars1h, "1h", [h for h in C.HORIZONS_H if 4 < h <= max_h])]
     vol = {h: np.full(len(origins), np.nan) for h in C.HORIZONS_H}
     touch = []
     bu, bd = barriers(C.THRESHOLDS)
@@ -170,8 +171,8 @@ def run_kronos(bars5, origins, size, n_paths, bs, dry):
             for k, j in enumerate(idx):
                 paths = outs[k * n_paths:(k + 1) * n_paths]
                 s0 = bars["close"].iloc[pos[j] - 1]
-                hi = np.stack([np.maximum(pp["high"].values, pp[["open", "close"]].max(1).values) for pp in paths])
-                lo = np.stack([np.minimum(pp["low"].values, pp[["open", "close"]].min(1).values) for pp in paths])
+                hi = np.stack([np.maximum(pp["high"].values, pp[["open", "close"]].max(axis=1).values) for pp in paths])
+                lo = np.stack([np.minimum(pp["low"].values, pp[["open", "close"]].min(axis=1).values) for pp in paths])
                 cl = np.stack([pp["close"].values for pp in paths])
                 lr = np.diff(np.log(np.c_[np.full(n_paths, s0), np.maximum(cl, 1e-9)]), axis=1)
                 for h in hs:
@@ -189,11 +190,14 @@ def run_kronos(bars5, origins, size, n_paths, bs, dry):
 
 # ---------------- Ablauf ----------------
 
+def hours_since_epoch(idx):
+    return np.asarray((idx - pd.Timestamp("1970-01-01", tz="UTC")) // pd.Timedelta("1h"))
+
 def main(a):
     ds = pd.read_parquet(C.DATA / "dataset.parquet")
     start, end = (C.VALID_START, C.VALID_END) if a.mode == "valid" else (C.TEST_START, str(ds.index[-1].date()))
     sel = ds[(ds.index >= pd.Timestamp(start, tz="UTC")) & (ds.index < pd.Timestamp(end, tz="UTC") + pd.Timedelta("1D"))]
-    sel = sel[(sel.index.hour % a.every == 0)]
+    sel = sel[hours_since_epoch(sel.index) % a.every == 0]
     sel = sel[sel[f"y_rv_{HMAX}"].notna() & (sel[f"y_miss_{HMAX}"] < 0.05)]
     if a.limit:
         sel = sel.iloc[:a.limit]
@@ -201,33 +205,60 @@ def main(a):
     print(f"{len(origins)} Prognosezeitpunkte ({a.mode}), Gerät: {DEV}")
     bars5, hr = hourly_series()
 
-    vol_rows, touch_rows = [], []
-
-    def add_var(name, vdict):
+    def var_rows(name, vdict, sub):
+        vr, tr = [], []
         for h, v in vdict.items():
             ok = np.isfinite(v)
             if not ok.any():
                 continue
-            te = sel[ok]
-            vol_rows.append(pd.DataFrame({"origin": te.index, "h": h, "model": name, "var": v[ok], "y": te[f"y_rv_{h}"].values}))
-            touch_rows.append(touch_long(te, v[ok], h, f"{name}_bm"))
+            te = sub[ok]
+            vr.append(pd.DataFrame({"origin": te.index, "h": h, "model": name, "var": v[ok], "y": te[f"y_rv_{h}"].values}))
+            tr.append(touch_long(te, v[ok], h, f"{name}_bm"))
+        return vr, tr
 
+    def cached_model(name, fn):
+        """Ergebnisse je Modell speichern -> Abbruch eines späteren Modells kostet nichts."""
+        pv = C.RESULTS / f"fm_cache_{a.mode}_e{a.every}_{name}_vol.parquet"
+        pt = C.RESULTS / f"fm_cache_{a.mode}_e{a.every}_{name}_touch.parquet"
+        if pv.exists() and pt.exists() and not a.recompute and not a.limit:
+            print(f"  {name}: aus Cache geladen ({pv.name})")
+            return pd.read_parquet(pv), pd.read_parquet(pt)
+        t0 = time.time()
+        vr, tr = fn()
+        v, t = pd.concat(vr, ignore_index=True), pd.concat(tr, ignore_index=True)
+        if not a.limit:
+            v.to_parquet(pv); t.to_parquet(pt)
+        print(f"  {name}: fertig in {(time.time() - t0) / 60:.1f} Min.")
+        return v, t
+
+    parts = []
     if "timestral" in a.models:
-        add_var(f"timestral_{a.timestral_size}", run_timestral(hr, origins, a.timestral_size, a.ctx, a.bs, a.dry_run))
+        name = f"timestral_{a.timestral_size}"
+        parts.append(cached_model(name, lambda: var_rows(name, run_timestral(hr, origins, a.timestral_size, a.ctx, a.bs, a.dry_run), sel)))
     if "chronos2" in a.models:
-        add_var("chronos2", run_chronos2(hr, origins, a.ctx, a.bs, a.dry_run))
+        parts.append(cached_model("chronos2", lambda: var_rows("chronos2", run_chronos2(hr, origins, a.ctx, a.bs, a.dry_run), sel)))
+    kronos_origins = None
     if "kronos" in a.models:
-        v, tk = run_kronos(bars5, origins, a.kronos_size, a.paths, a.kronos_bs, a.dry_run)
-        add_var(f"kronos_{a.kronos_size}", v)
-        hit = []
-        for r in tk.itertuples():
-            y = sel.at[r.origin, f"y_up_{r.h}"] if r.dir == "up" else sel.at[r.origin, f"y_dn_{r.h}"]
-            b = np.log1p(r.thr) if r.dir == "up" else -np.log1p(-r.thr)
-            hit.append(int(y >= b) if r.dir == "up" else int(y <= -b))
-        tk["hit"] = hit
-        tk["model"] = f"kronos_{a.kronos_size}_paths"
-        touch_rows.append(tk)
+        ksel = sel[hours_since_epoch(sel.index) % a.kronos_every == 0]
+        kronos_origins = ksel.index
+        print(f"Kronos: {len(ksel)} Zeitpunkte (jede {a.kronos_every}. Stunde), Horizonte bis {a.kronos_max_h}h, {a.paths} Pfade")
+        name = f"kronos_{a.kronos_size}"
 
+        def kr():
+            v, tk = run_kronos(bars5, ksel.index, a.kronos_size, a.paths, a.kronos_bs, a.dry_run, a.kronos_max_h)
+            vr, tr = var_rows(name, v, ksel)
+            hit = []
+            for r in tk.itertuples():
+                y = ksel.at[r.origin, f"y_up_{r.h}"] if r.dir == "up" else ksel.at[r.origin, f"y_dn_{r.h}"]
+                b = np.log1p(r.thr) if r.dir == "up" else -np.log1p(-r.thr)
+                hit.append(int(y >= b) if r.dir == "up" else int(y <= -b))
+            tk["hit"] = hit
+            tk["model"] = f"{name}_paths"
+            return vr, tr + [tk]
+        parts.append(cached_model(f"{name}_e{a.kronos_every}_p{a.paths}", kr))
+
+    vol_rows = [p[0] for p in parts]
+    touch_rows = [p[1] for p in parts]
     vp = pd.concat(vol_rows, ignore_index=True)
     tp = pd.concat(touch_rows, ignore_index=True)
     # Vergleich mit Baselines auf denselben Zeitpunkten
@@ -242,7 +273,18 @@ def main(a):
                 tp = pd.concat([old, tp], ignore_index=True)
         else:
             print(f"Hinweis: {p.name} fehlt -> erst s03_models.py --mode {a.mode} laufen lassen für den Vergleich")
-    tag = f"foundation_{a.mode}"
+    is_k = lambda m: m.str.startswith("kronos")
+    report(vp[~is_k(vp["model"])], tp[~is_k(tp["model"])], f"foundation_{a.mode}",
+           f"Foundation Models vs. Baselines ({a.mode}, jede {a.every}. Stunde)", f"{len(origins)} Zeitpunkte.")
+    if kronos_origins is not None:
+        report(vp[vp["origin"].isin(kronos_origins)], tp[tp["origin"].isin(kronos_origins)], f"kronos_{a.mode}",
+               f"Kronos vs. alle ({a.mode}, jede {a.kronos_every}. Stunde)",
+               f"{len(kronos_origins)} Zeitpunkte, {a.paths} Pfade je Zeitpunkt (Wahrscheinlichkeiten entsprechend grob).")
+
+
+def report(vp, tp, tag, title, notes):
+    if vp.empty:
+        return
     vp.to_parquet(C.RESULTS / f"vol_preds_{tag}.parquet")
     tp.to_parquet(C.RESULTS / f"touch_preds_{tag}.parquet")
     ref = "har" if "har" in vp["model"].unique() else vp["model"].iloc[0]
@@ -251,23 +293,25 @@ def main(a):
     vt.to_csv(C.RESULTS / f"vol_metrics_{tag}.csv", index=False)
     tt.to_csv(C.RESULTS / f"touch_metrics_{tag}.csv", index=False)
     reliability(tpe).to_csv(C.RESULTS / f"reliability_{tag}.csv", index=False)
-    write_report(vt, tt, C.RESULTS / f"RESULTS_{tag}.md", f"Foundation Models vs. Baselines ({a.mode}, jede {a.every}. Stunde)",
-                 notes=f"{len(origins)} Zeitpunkte. Kronos-Pfade: {a.paths} je Zeitpunkt (Wahrscheinlichkeiten entsprechend grob).")
+    write_report(vt, tt, C.RESULTS / f"RESULTS_{tag}.md", title, notes=notes)
+    print(f"\n=== {title}")
     print(vt.sort_values(["h", "QLIKE"]).round(4).to_string(index=False))
     print(tt.groupby("model")[["Brier", "LogLoss"]].mean().sort_values("Brier").round(5).to_string())
-
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", choices=["valid", "test"], default="valid")
-    ap.add_argument("--models", nargs="+", default=["chronos2", "timestral", "kronos"])
+    ap.add_argument("--models", nargs="+", default=["chronos2", "timestral"])
     ap.add_argument("--every", type=int, default=6, help="nur jede n-te Stunde prognostizieren")
     ap.add_argument("--limit", type=int, default=0, help="max. Anzahl Zeitpunkte (0 = alle), zum schnellen Testen")
     ap.add_argument("--ctx", type=int, default=2048, help="Kontextlänge in Stunden für chronos2/timestral")
     ap.add_argument("--bs", type=int, default=64)
     ap.add_argument("--timestral-size", default="209M", choices=["5M", "28M", "123M", "209M"])
     ap.add_argument("--kronos-size", default="small", choices=["mini", "small", "base"])
-    ap.add_argument("--paths", type=int, default=32, help="Kronos: gesampelte Pfade je Zeitpunkt")
+    ap.add_argument("--paths", type=int, default=16, help="Kronos: gesampelte Pfade je Zeitpunkt")
     ap.add_argument("--kronos-bs", type=int, default=4, help="Kronos: Zeitpunkte pro Batch (x paths)")
+    ap.add_argument("--kronos-every", type=int, default=24, help="Kronos: nur jede n-te Stunde (teuer!)")
+    ap.add_argument("--kronos-max-h", type=int, default=72, help="Kronos: längster Horizont in Stunden")
+    ap.add_argument("--recompute", action="store_true", help="gespeicherte Modell-Ergebnisse ignorieren")
     ap.add_argument("--dry-run", action="store_true", help="winzige Zufallsmodelle, nur zum Testen der Pipeline")
     main(ap.parse_args())

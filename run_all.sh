@@ -9,5 +9,5 @@ echo "=== $(date) Start, Modus $MODE"
 [ -f data/klines_1m.parquet ] || python s01_download.py --futures
 [ -f data/dataset.parquet ]   || python s02_features.py
 python s03_models.py --mode "$MODE"
-python s04_foundation.py --mode "$MODE" --models chronos2 timestral kronos --every 6
+python s04_foundation.py --mode "$MODE" --models chronos2 timestral --every 6
 echo "=== $(date) Fertig. Ergebnisse: results/RESULTS_${MODE}.md und results/RESULTS_foundation_${MODE}.md"
