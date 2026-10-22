@@ -47,7 +47,12 @@ UA = {"User-Agent": "Mozilla/5.0 (research script)", "Accept": "application/json
 
 # ---------------- HTTP mit Cache ----------------
 
+OFFLINE = False      # --offline: nur Cache benutzen (z. B. nach --import aus dem Browser)
+
+
 def http_json(url, retries=4):
+    if OFFLINE and "deribit" not in url:
+        return None
     for i in range(retries):
         try:
             req = urllib.request.Request(url, headers=UA)
@@ -65,6 +70,17 @@ def http_json(url, retries=4):
         time.sleep(2 ** i)
     print(f"  WARN: {url} -> {err}")
     return None
+
+
+def import_dump(path):
+    """Browser-Export (pm_dump.json) in den Cache schreiben."""
+    d = json.loads(open(path).read())
+    fid = d.get("fidelity", 60)
+    for slug, ev in d.get("events", {}).items():
+        (CACHE / f"event_{slug}.json").write_text(json.dumps(ev))
+    for tok, h in d.get("hist", {}).items():
+        (CACHE / f"hist_{tok[-16:]}_{fid}.json").write_text(json.dumps(h))
+    print(f"Import: {len(d.get('events', {}))} Events, {len(d.get('hist', {}))} Preisverläufe -> {CACHE}")
 
 
 def cached(name, fn):
@@ -107,7 +123,7 @@ def find_events(weeks_back):
                 events[ev["slug"]] = ev
                 break
     # Zusätzlich Volltextsuche (findet Events mit abweichendem Slug)
-    for page in range(1, 6):
+    for page in range(1, 6 if not OFFLINE else 1):
         q = urllib.parse.quote("What price will Bitcoin hit")
         res = cached(f"search_{page}", lambda p=page: http_json(
             f"{GAMMA}/public-search?q={q}&events_status=closed&limit_per_type=50&page={p}"))
@@ -457,7 +473,13 @@ if __name__ == "__main__":
     ap.add_argument("--weeks-back", type=int, default=80)
     ap.add_argument("--fidelity", type=int, default=60, help="Auflösung der Polymarket-Preise in Minuten")
     ap.add_argument("--cost", type=float, default=0.02, help="Round-trip-Kosten je Anteil (Spread + Gebühren)")
+    ap.add_argument("--import", dest="imp", help="pm_dump.json aus dem Browser-Skript importieren")
+    ap.add_argument("--offline", action="store_true", help="keine Polymarket-Abfragen, nur Cache")
     a = ap.parse_args()
+    if a.imp:
+        import_dump(a.imp)
+        OFFLINE = True
+    OFFLINE = OFFLINE or a.offline
     events = find_events(a.weeks_back)
     if not events:
         raise SystemExit("Keine Events gefunden. Prüfe Internetzugang zu gamma-api.polymarket.com "
