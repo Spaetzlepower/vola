@@ -12,6 +12,7 @@ später mit den Preisen bei Polymarket.
 | `s02_features.py` | 5m-Bars, Features, Zielgrößen, Saisonprofil | 1–2 Min. |
 | `s03_models.py` | EWMA, HAR, GARCH, LightGBM, Klimatologie, LightGBM-Touch – Walk-forward | 10–40 Min. (CPU) |
 | `s04_foundation.py` | Chronos-2, Timestral, Kronos zero-shot auf denselben Zeitpunkten | 1–3 Std. (GPU) |
+| `s06_polymarket.py` | Polymarket-Wochenmärkte vs. Deribit-DVOL vs. eigenes Modell: Kalibrierung + Kurzfrist-Backtest | 10–30 Min. |
 | `evaluate.py` | Metriken (QLIKE, Brier, LogLoss, Diebold-Mariano), Report | – |
 | `analyse.ipynb` | Ablauf + Grafiken (Reliability-Diagramme, Vola-Verlauf) | – |
 | `run_all.sh` | alles nacheinander im Hintergrund | – |
@@ -77,3 +78,14 @@ Termin in den Horizont fällt, werden dann als Feature erkannt.
 - Kronos liefert Wahrscheinlichkeiten aus gesampelten Pfaden (Standard: 32) → grobe Auflösung;
   für feinere Werte `--paths 64` oder mehr (kostet linear mehr Zeit).
 - Danach Instanz **zerstören**, damit keine Kosten weiterlaufen.
+
+## Polymarket vs. Optionen (s06)
+
+```bash
+python s06_polymarket.py                 # nach s03 ausführen (nutzt dessen Vola-Prognosen)
+python s06_polymarket.py --cost 0.03     # andere Kostenannahme (Round-trip je Anteil)
+```
+Lädt vergangene Wochenmärkte „What price will Bitcoin hit …“ (Gamma-/CLOB-API) und die Deribit-DVOL,
+berechnet stündlich faire Touch-Wahrscheinlichkeiten und prüft (a) wer den Ausgang besser vorhersagt und
+(b) ob sich der Polymarket-Preis innerhalb von 1/4/24 h Richtung fairer Wert bewegt (Backtest nach Kosten).
+Rohdaten werden in `data/pm/` gecacht. Report: `results/RESULTS_polymarket.md`.
