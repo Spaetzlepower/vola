@@ -1,0 +1,14 @@
+# torch ist im vast.ai-PyTorch-Template bereits installiert
+numpy
+pandas>=2.1
+pyarrow
+scipy
+lightgbm
+arch
+matplotlib
+tabulate
+einops
+safetensors
+huggingface_hub
+chronos-forecasting>=2.0
+timestral @ git+https://github.com/mistralai/timestral.git
