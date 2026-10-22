@@ -7,6 +7,7 @@ lightgbm
 arch
 matplotlib
 tabulate
+scikit-learn
 einops
 safetensors
 huggingface_hub

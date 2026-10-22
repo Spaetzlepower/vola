@@ -278,11 +278,13 @@ def build_panel(mk, fidelity, k):
     dv = dvol(mk["start"].min() - pd.Timedelta(days=400), mk["end"].max() + pd.Timedelta(hours=2))
     vp = None
     for f in sorted(C.RESULTS.glob("vol_preds_*.parquet")):
-        if "foundation" not in f.name:
+        if "foundation" not in f.name and "kronos" not in f.name:
             vp = pd.concat([vp, pd.read_parquet(f)]) if vp is not None else pd.read_parquet(f)
     interps = {}
     if vp is not None:
-        for m in ("har", "lgbm"):
+        vp = vp.drop_duplicates(["origin", "h", "model"])
+        ens = sorted(m for m in vp["model"].unique() if m.startswith("ens_") and m != "ens_har")
+        for m in ["har", "lgbm"] + ens:
             fn = model_var_interp(vp, m)
             if fn:
                 interps[m] = fn

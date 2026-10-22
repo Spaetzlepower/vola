@@ -12,6 +12,7 @@ später mit den Preisen bei Polymarket.
 | `s02_features.py` | 5m-Bars, Features, Zielgrößen, Saisonprofil | 1–2 Min. |
 | `s03_models.py` | EWMA, HAR, GARCH, LightGBM, Klimatologie, LightGBM-Touch – Walk-forward | 10–40 Min. (CPU) |
 | `s04_foundation.py` | Chronos-2, Timestral, Kronos zero-shot auf denselben Zeitpunkten | 1–3 Std. (GPU) |
+| `s05_ensemble.py` | Stacking (Chronos-2/Timestral/DVOL als Features) + Kalibrierung → bester fairer Wert | 30–60 Min. (GPU) |
 | `s06_polymarket.py` | Polymarket-Wochenmärkte vs. Deribit-DVOL vs. eigenes Modell: Kalibrierung + Kurzfrist-Backtest | 10–30 Min. |
 | `evaluate.py` | Metriken (QLIKE, Brier, LogLoss, Diebold-Mariano), Report | – |
 | `analyse.ipynb` | Ablauf + Grafiken (Reliability-Diagramme, Vola-Verlauf) | – |

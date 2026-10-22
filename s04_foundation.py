@@ -43,11 +43,18 @@ def hourly_series():
     return b, hr
 
 
-def seas_hour_future(origin, n):
-    seas = pd.read_parquet(C.DATA / "seasonality.parquet")["seas"].values
-    t = pd.date_range(origin, periods=n * H, freq="5min")
-    v = seas[(t.day_of_week * 288 + t.hour * 12 + t.minute // 5).values]
-    return v.reshape(n, H).mean(1)
+_SEAS = None
+
+
+def seas_hour_future_all(origins, n):
+    """Saisonniveau der nächsten n Stunden für alle Prognosezeitpunkte (vektorisiert)."""
+    global _SEAS
+    if _SEAS is None:
+        _SEAS = pd.read_parquet(C.DATA / "seasonality.parquet")["seas"].values
+    o = pd.DatetimeIndex(origins)
+    b0 = np.asarray(o.day_of_week * 288 + o.hour * 12 + o.minute // 5)
+    idx = (b0[:, None] + np.arange(n * H)[None, :]) % 2016
+    return _SEAS[idx].reshape(len(o), n, H).mean(2)
 
 
 def quantiles_to_var(q, levels, origins):
@@ -56,7 +63,7 @@ def quantiles_to_var(q, levels, origins):
     med = q[..., np.argmin(abs(levels - 0.5))]
     s = (q[..., np.argmin(abs(levels - 0.9))] - q[..., np.argmin(abs(levels - 0.1))]) / 2.5631
     ev = np.exp(med + 0.5 * s ** 2)                                  # E[RV] je Stunde (Lognormal)
-    seasf = np.stack([seas_hour_future(o, HMAX) for o in origins])
+    seasf = seas_hour_future_all(origins, HMAX)
     per_hour = ev * H * seasf
     cum = per_hour.cumsum(1)
     return {h: cum[:, h - 1] for h in C.HORIZONS_H}
