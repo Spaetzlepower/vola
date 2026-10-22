@@ -14,6 +14,8 @@ später mit den Preisen bei Polymarket.
 | `s04_foundation.py` | Chronos-2, Timestral, Kronos zero-shot auf denselben Zeitpunkten | 1–3 Std. (GPU) |
 | `s05_ensemble.py` | Stacking (Chronos-2/Timestral/DVOL als Features) + Kalibrierung → bester fairer Wert | 30–60 Min. (GPU) |
 | `s06_polymarket.py` | Polymarket-Wochenmärkte vs. Deribit-DVOL vs. eigenes Modell: Kalibrierung + Kurzfrist-Backtest | 10–30 Min. |
+| `s07_options.py` | Optionsmarkt: 30-Tage-Prognose vs. DVOL, Backtest Vola kaufen/verkaufen | 2–5 Min. |
+| `events_macro.csv` | US-Makrotermine 2021–2026 (CPI aus BLS-Archiv, FOMC), wird automatisch genutzt | – |
 | `evaluate.py` | Metriken (QLIKE, Brier, LogLoss, Diebold-Mariano), Report | – |
 | `analyse.ipynb` | Ablauf + Grafiken (Reliability-Diagramme, Vola-Verlauf) | – |
 | `run_all.sh` | alles nacheinander im Hintergrund | – |
@@ -61,9 +63,20 @@ python s04_foundation.py --mode valid --models kronos --paths 64 --kronos-size b
 python s04_foundation.py --mode valid --limit 20 --paths 8                        # Schnelltest
 ```
 
-## Makro-Termine (empfohlen)
+## Optionsmarkt (s07)
 
-`data/events.csv` mit US-Terminen (CPI, FOMC, NFP, PCE) anlegen, Zeit in **UTC**:
+```bash
+python s07_options.py --mode long      # 2023 bis heute
+python s07_options.py --mode test      # nur ab 2026
+```
+Vergleicht die 30-Tage-Vola-Prognose mit der Deribit-DVOL und simuliert "Vola verkaufen/kaufen"
+(Gewinn je Trade ≈ implizite − realisierte Vola in Vola-Punkten, nach Kosten). Benchmark ist
+"immer verkaufen" (= Risikoprämie einsammeln). Report: `results/RESULTS_options_<mode>.md`.
+
+## Makro-Termine
+
+Mitgeliefert: `events_macro.csv` (CPI, FOMC 2021–2026). Eigene Ergänzungen (z. B. NFP, PCE) als
+`data/events.csv` anlegen – diese Datei hat dann Vorrang. Zeit in **UTC**:
 ```
 time,name
 2026-01-13 13:30,CPI

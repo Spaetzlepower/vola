@@ -146,11 +146,13 @@ def add_futures(ds):
 
 
 def add_events(ds):
-    p = C.DATA / "events.csv"
+    p = C.DATA / "events.csv"                     # eigene Datei hat Vorrang
     if not p.exists():
-        print("Keine data/events.csv gefunden -> ohne Makro-Termine (empfohlen: nachreichen)")
+        p = C.ROOT / "events_macro.csv"           # mitgelieferter Kalender (CPI, FOMC)
+    if not p.exists():
+        print("Kein Makro-Kalender gefunden -> ohne Makro-Termine")
         return ds
-    ev = pd.to_datetime(pd.read_csv(p)["time"], utc=True).sort_values().values
+    ev = pd.to_datetime(pd.read_csv(p, comment="#")["time"], utc=True).sort_values().values
     t = ds.index.values
     j = np.searchsorted(ev, t, side="left")             # nächster Termin >= t
     nxt = np.where(j < len(ev), ev[np.minimum(j, len(ev) - 1)], np.datetime64("NaT"))
