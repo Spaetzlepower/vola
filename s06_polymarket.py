@@ -321,7 +321,8 @@ def build_panel(mk, fidelity, k):
         ph = ph[ph.index < r.end].reindex(grid, method="ffill", tolerance=pd.Timedelta("2h")).dropna()
         if ph.empty:
             continue
-        w = k1[(k1.index >= r.start) & (k1.index < r.end)]
+        # Beobachtungsfenster = ganze Woche (Ende - 7 Tage); startDate ist oft nur der Erstellungszeitpunkt
+        w = k1[(k1.index >= min(r.start, r.end - pd.Timedelta(days=7))) & (k1.index < r.end)]
         if w.empty:
             continue
         # Ausgang nach Binance-1m-Daten (Polymarket-Auflösungsquelle)
@@ -382,7 +383,7 @@ def future_price(P, H):
 
 def analyse(panel, cost, out):
     fvs = [c for c in panel.columns if c.startswith("fv_")]
-    P = panel.dropna(subset=fvs).copy()
+    P = panel.dropna(subset=["fv_dvol"]).copy()        # Modell-Prognosen fehlen evtl. für Teilzeiträume -> je Quelle
     L = [f"# Polymarket vs. Optionen (DVOL) vs. eigenes Modell", "",
          f"{P['event'].nunique()} Wochen, {P['market_id'].nunique()} Stufen, {len(P):,} Stunden-Beobachtungen "
          f"(offene, noch nicht berührte Stufen). Angenommene Round-trip-Kosten: {cost:.3f} je Anteil.", "",
@@ -391,11 +392,15 @@ def analyse(panel, cost, out):
 
     # a) Vorhersagegüte für den Ausgang
     rows = []
-    for c in ["pm"] + fvs:
-        p = P[c].clip(1e-4, 1 - 1e-4)
-        rows.append({"Quelle": c, "Brier": ((p - P.outcome) ** 2).mean(),
-                     "LogLoss": -(P.outcome * np.log(p) + (1 - P.outcome) * np.log(1 - p)).mean(),
-                     "mittl. Prognose": p.mean(), "Trefferquote": P.outcome.mean()})
+    for c in fvs:
+        Q = P[P[c].notna()]
+        p = Q[c].clip(1e-4, 1 - 1e-4)
+        q = Q["pm"].clip(1e-4, 1 - 1e-4)
+        rows.append({"Quelle": c, "n": len(Q), "Wochen": Q["event"].nunique(),
+                     "Brier": ((p - Q.outcome) ** 2).mean(), "Brier Polymarket (gleiche Zeilen)": ((q - Q.outcome) ** 2).mean(),
+                     "LogLoss": -(Q.outcome * np.log(p) + (1 - Q.outcome) * np.log(1 - p)).mean(),
+                     "LogLoss Polymarket": -(Q.outcome * np.log(q) + (1 - Q.outcome) * np.log(1 - q)).mean(),
+                     "mittl. Prognose": p.mean(), "mittl. Polymarket": q.mean(), "Trefferquote": Q.outcome.mean()})
     L += ["## a) Wer sagt den Ausgang besser vorher? (niedriger = besser)", "",
           pd.DataFrame(rows).round(4).to_markdown(index=False), ""]
 
@@ -452,8 +457,9 @@ def analyse(panel, cost, out):
         fut = future_price(P, H)
         ok = fut.notna()
         for c in fvs:
-            x = (P[c] - P["pm"])[ok]
-            y = (fut - P["pm"])[ok]
+            okc = ok & P[c].notna()
+            x = (P[c] - P["pm"])[okc]
+            y = (fut - P["pm"])[okc]
             if len(x) > 30 and x.std() > 0:
                 beta = np.polyfit(x, y, 1)[0]
                 reg.append({"H": f"{H}h", "Quelle": c, "Anteil der Lücke, der sich schließt (beta)": beta, "n": len(x)})
