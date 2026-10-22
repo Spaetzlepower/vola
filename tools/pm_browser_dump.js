@@ -1,8 +1,9 @@
-// Polymarket-Daten im Browser laden (nur lesen, öffentliche API) -> Datei pm_dump.json
+// Polymarket-Daten im Browser laden (nur lesen, öffentliche API) -> Datei pm_dump.json bzw. pm_dump_1m.json
 // Anleitung: Tab mit https://gamma-api.polymarket.com/events?limit=1 öffnen, F12 -> Konsole,
-// gesamten Code einfügen, Enter. Dauert ca. 5-15 Min. Am Ende startet der Download von pm_dump.json.
+// gesamten Code einfügen, Enter. Am Ende startet der Download.
+// Einstellungen: Stundendaten für ~90 Wochen: WEEKS=90, FID=60.  Minutendaten (Latenz-Analyse): WEEKS=10, FID=1.
 (async () => {
-  const WEEKS = 90, FID = 60, TIMEOUT = 15000, PAUSE = 250, TRIES = 3;
+  const WEEKS = (window.PM_WEEKS ?? 90), FID = (window.PM_FID ?? 60), TIMEOUT = 20000, PAUSE = 250, TRIES = 3;
   const MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august",
                   "september", "october", "november", "december"];
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -76,6 +77,17 @@
   console.log(`2/2: Preisverläufe laden (${jobs.length} Stufen) ...`);
   for (let i = 0; i < jobs.length; i++) {
     const [tok, s, e] = jobs[i];
+    if (FID < 60) {                      // Minutendaten tageweise abfragen (API begrenzt große Zeiträume)
+      const hist = [];
+      for (let d0 = s; d0 < e; d0 += 86400) {
+        const r = await get(`https://clob.polymarket.com/prices-history?market=${tok}&startTs=${d0}&endTs=${Math.min(d0 + 86400, e)}&fidelity=${FID}`);
+        if (r && r.history) hist.push(...r.history);
+        await sleep(PAUSE);
+      }
+      dump.hist[tok] = { history: hist };
+      if ((i + 1) % 10 === 0) console.log(`  ${i + 1}/${jobs.length}`);
+      continue;
+    }
     let h = await get(`https://clob.polymarket.com/prices-history?market=${tok}&startTs=${s}&endTs=${e}&fidelity=${FID}`);
     if (!h || !h.history || !h.history.length) {
       await sleep(PAUSE);
@@ -88,7 +100,7 @@
 
   const blob = new Blob([JSON.stringify(dump)], { type: "application/json" });
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob); a.download = "pm_dump.json";
+  a.href = URL.createObjectURL(blob); a.download = FID === 60 ? "pm_dump.json" : `pm_dump_${FID}m.json`;
   document.body.appendChild(a); a.click(); a.remove();
   console.log(`Fertig: ${Object.keys(dump.events).length} Wochen, ${Object.keys(dump.hist).length} Preisverläufe, ` +
               `${failures} fehlgeschlagene Abfragen. Download pm_dump.json gestartet.`);
