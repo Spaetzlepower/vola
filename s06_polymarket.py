@@ -221,9 +221,11 @@ def price_history(token, start, end, fidelity):
 
 def dvol(start, end):
     p = C.DATA / "dvol_1h.parquet"
+    if p.exists() and OFFLINE:
+        return pd.read_parquet(p)["dvol"]
     if p.exists():
         d = pd.read_parquet(p)
-        if d.index.min() <= start and d.index.max() >= end - pd.Timedelta("2D"):
+        if d.index.min() <= start + pd.Timedelta("400D") and d.index.max() >= end - pd.Timedelta("2D"):
             return d["dvol"]
     rows = []
     t = start
@@ -234,6 +236,9 @@ def dvol(start, end):
         if r and r.get("result", {}).get("data"):
             rows += r["result"]["data"]
         t = t2
+    if not rows and p.exists():                       # keine Verbindung -> vorhandenen Cache nutzen
+        print("  DVOL: keine neuen Daten abrufbar, nutze vorhandenen Cache")
+        return pd.read_parquet(p)["dvol"]
     d = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close"])
     d["time"] = pd.to_datetime(d["ts"], unit="ms", utc=True)
     d = d.drop_duplicates("time").set_index("time").sort_index()[["close"]].rename(columns={"close": "dvol"})
