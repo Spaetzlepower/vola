@@ -13,4 +13,6 @@ python s04_foundation.py --mode "$MODE" --models chronos2 timestral --every 6
 python s05_ensemble.py --mode "$MODE"
 python s06_polymarket.py
 python s07_options.py --mode long
+python s08_pm_check.py
+python s10_pm_vol.py
 echo "=== $(date) Fertig. Ergebnisse: results/RESULTS_${MODE}.md und results/RESULTS_foundation_${MODE}.md"

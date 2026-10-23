@@ -371,17 +371,27 @@ def week_tstat(x, groups):
     return m.mean() / (m.std(ddof=1) / np.sqrt(len(m))), len(m)
 
 
-def future_price(P, H):
-    """Preis H Stunden später. Wurde die Stufe zwischenzeitlich berührt -> 1 (Yes sicher);
-    ist der Markt vorher ausgelaufen -> Ausgang."""
-    tH = P["t"] + pd.Timedelta(hours=H)
+def price_at_time(P, when, rows=None):
+    """Polymarket-Preis zum Zeitpunkt `when` für die Zeilen `rows` von P (Standard: alle). Wurde die Stufe bis
+    dahin berührt -> 1 (Yes sicher); ist der Markt bis dahin ausgelaufen -> Ausgang. Sonst Stundenpreis (NaN wenn keiner)."""
+    R = P if rows is None else P.loc[rows]
+    when = pd.DatetimeIndex(when)
+    if when.tz is None:
+        when = when.tz_localize("UTC")
+    when = pd.Series(when, index=R.index)
     look = P.set_index(["market_id", "t"])["pm"]
-    fut = pd.Series(look.reindex(pd.MultiIndex.from_arrays([P["market_id"], tH])).values, index=P.index)
-    touched = P["first_hit"] <= tH
-    expired = P["end"] <= tH
+    look = look[~look.index.duplicated()]
+    fut = pd.Series(look.reindex(pd.MultiIndex.from_arrays([R["market_id"], when])).values, index=R.index)
+    touched = R["first_hit"] <= when
+    expired = R["end"] <= when
     fut = fut.where(~touched, 1.0)
-    fut = fut.where(touched | ~expired, P["outcome"])
+    fut = fut.where(touched | ~expired, R["outcome"])
     return fut
+
+
+def future_price(P, H):
+    """Preis H Stunden nach t (siehe price_at_time)."""
+    return price_at_time(P, P["t"] + pd.Timedelta(hours=H))
 
 
 def analyse(panel, cost, out):

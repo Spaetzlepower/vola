@@ -16,6 +16,9 @@ später mit den Preisen bei Polymarket.
 | `s06_polymarket.py` | Polymarket-Wochenmärkte vs. Deribit-DVOL vs. eigenes Modell: Kalibrierung + Kurzfrist-Backtest | 10–30 Min. |
 | `s07_options.py` | Optionsmarkt: 30-Tage-Prognose vs. DVOL, Backtest Vola kaufen/verkaufen | 2–5 Min. |
 | `events_macro.csv` | US-Makrotermine 2021–2026 (CPI aus BLS-Archiv, FOMC), wird automatisch genutzt | – |
+| `s08_pm_check.py` | Robustheit des Polymarket-Backtests (Latenz, Kosten, veraltete Preise) | 1–2 Min. |
+| `s09_gap_decay.py` | Minutendaten: wie schnell schließt sich eine Lücke? | 5–15 Min. |
+| `s10_pm_vol.py` | Vola-Trade auf Polymarket: Paar über/unter dem Kurs, nach 1/4/24 h schließen | 2–5 Min. |
 | `evaluate.py` | Metriken (QLIKE, Brier, LogLoss, Diebold-Mariano), Report | – |
 | `analyse.ipynb` | Ablauf + Grafiken (Reliability-Diagramme, Vola-Verlauf) | – |
 | `run_all.sh` | alles nacheinander im Hintergrund | – |

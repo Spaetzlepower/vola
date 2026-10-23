@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 
 import config as C
-from s06_polymarket import future_price, week_tstat
+from s06_polymarket import future_price, price_at_time, week_tstat
 
 
 def staleness(P):
@@ -32,7 +32,7 @@ def staleness(P):
 
 def trades(P, fv, th, H, cost, delay=0):
     """Signal zum Zeitpunkt t; Einstieg zum Preis t+delay; Ausstieg t+delay+H (H=None: bis Ende)."""
-    entry = P["pm"] if delay == 0 else future_price(P, delay)
+    entry = P["pm"] if delay == 0 else price_at_time(P, P["t"] + pd.Timedelta(hours=delay))
     gap = P[fv] - P["pm"]                                     # Signal nur aus Info bis t
     sel = (gap.abs() > th) & entry.notna() & P[fv].notna()
     # Einstieg muss noch sinnvoll sein (Stufe nicht inzwischen berührt/ausgelaufen)
@@ -40,7 +40,7 @@ def trades(P, fv, th, H, cost, delay=0):
     if H is None:
         ex = P["outcome"]
     else:
-        ex = future_price(P.assign(t=P["t"] + pd.Timedelta(hours=delay)), H) if delay else future_price(P, H)
+        ex = price_at_time(P, P["t"] + pd.Timedelta(hours=delay + H))
     sel &= ex.notna()
     side = np.sign(gap[sel])                                  # +1 = Yes kaufen, -1 = No kaufen
     e, x = entry[sel], ex[sel]
