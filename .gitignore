@@ -5,3 +5,4 @@ logs/
 __pycache__/
 *.parquet
 .ipynb_checkpoints/
+bot/logs/
