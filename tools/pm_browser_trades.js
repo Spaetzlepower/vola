@@ -2,7 +2,7 @@
 // Anleitung: Tab https://gamma-api.polymarket.com/events?limit=1 öffnen, F12 -> Konsole, optional vorher:
 //   window.PM_DAYS = 21;  window.PM_WEEKS = 60;     dann dieses Skript einfügen. Dauer ca. 20-60 Min.
 (async () => {
-  const DAYS = (window.PM_DAYS ?? 21), WEEKS = (window.PM_WEEKS ?? 60), TIMEOUT = 25000, PAUSE = 350, TRIES = 5, PAR = 2;
+  const DAYS = (window.PM_DAYS ?? 21), WEEKS = (window.PM_WEEKS ?? 60), TIMEOUT = 25000, PAUSE = (window.PM_PAUSE_MS ?? 350), TRIES = 5, PAR = (window.PM_PAR ?? 2);
   const MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august",
                   "september", "october", "november", "december"];
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
