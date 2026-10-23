@@ -19,6 +19,7 @@ später mit den Preisen bei Polymarket.
 | `s08_pm_check.py` | Robustheit des Polymarket-Backtests (Latenz, Kosten, veraltete Preise) | 1–2 Min. |
 | `s09_gap_decay.py` | Minutendaten: wie schnell schließt sich eine Lücke? | 5–15 Min. |
 | `s10_pm_vol.py` | Vola-Trade auf Polymarket: Paar über/unter dem Kurs, nach 1/4/24 h schließen | 2–5 Min. |
+| `s11_pm_hourly.py` | Stündliche Märkte „Bitcoin above K at hh ET“: Kalibrierung, Lücken-Handel, Digital-Strangle | 5–15 Min. |
 | `evaluate.py` | Metriken (QLIKE, Brier, LogLoss, Diebold-Mariano), Report | – |
 | `analyse.ipynb` | Ablauf + Grafiken (Reliability-Diagramme, Vola-Verlauf) | – |
 | `run_all.sh` | alles nacheinander im Hintergrund | – |

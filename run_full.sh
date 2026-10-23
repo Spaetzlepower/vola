@@ -45,6 +45,7 @@ python s06_polymarket.py --import inputs/pm_dump.json
 python s08_pm_check.py
 python s10_pm_vol.py
 [ -f inputs/pm_dump_1m.json ] && python s09_gap_decay.py || echo "(keine Minutendaten -> s09 übersprungen)"
+[ -f inputs/pm_hourly_dump.json ] && python s11_pm_hourly.py || echo "(keine Stundenmärkte -> s11 übersprungen)"
 
 echo "=== $(date) Warte auf Kronos ..."
 wait $KPID || echo "Kronos mit Fehler beendet, siehe logs/kronos.log"
