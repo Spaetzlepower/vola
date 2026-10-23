@@ -11,7 +11,26 @@ python s02_features.py
 
 # Tempo: REFIT=1 = monatlich neu trainieren (genauer, langsam), Standard 3 = quartalsweise (schnell)
 REFIT="${REFIT:-3}"
-echo "CPU-Kerne: $(nproc), Neu-Training alle $REFIT Monate"
+# Wirklich erlaubte Kerne (Container-Limit), nicht die Kerne des ganzen Servers -> verhindert Thread-Stau
+CPUS=$(python - <<'PY'
+import os
+n = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count()
+try:
+    q, p = open("/sys/fs/cgroup/cpu.max").read().split()
+    if q != "max":
+        n = min(n, max(1, int(int(q) / int(p))))
+except Exception:
+    try:
+        q = int(open("/sys/fs/cgroup/cpu/cpu.cfs_quota_us").read()); p = int(open("/sys/fs/cgroup/cpu/cpu.cfs_period_us").read())
+        if q > 0:
+            n = min(n, max(1, q // p))
+    except Exception:
+        pass
+print(n)
+PY
+)
+export OMP_NUM_THREADS=$CPUS MKL_NUM_THREADS=$CPUS OPENBLAS_NUM_THREADS=$CPUS
+echo "Kerne laut nproc: $(nproc), erlaubt: $CPUS -> genutzt: $CPUS Threads; Neu-Training alle $REFIT Monate"
 
 # GPU nebenher: Kronos auf dem Testzeitraum (eigenes Log; nutzt gespeicherte Ergebnisse, falls vorhanden)
 nohup python s04_foundation.py --mode test --models kronos > logs/kronos.log 2>&1 &
