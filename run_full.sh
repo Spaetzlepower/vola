@@ -9,15 +9,19 @@ echo "=== $(date) Start"
 [ -f data/klines_1m.parquet ] || python s01_download.py
 python s02_features.py
 
-# GPU nebenher: Kronos auf dem Testzeitraum (eigenes Log)
+# Tempo: REFIT=1 = monatlich neu trainieren (genauer, langsam), Standard 3 = quartalsweise (schnell)
+REFIT="${REFIT:-3}"
+echo "CPU-Kerne: $(nproc), Neu-Training alle $REFIT Monate"
+
+# GPU nebenher: Kronos auf dem Testzeitraum (eigenes Log; nutzt gespeicherte Ergebnisse, falls vorhanden)
 nohup python s04_foundation.py --mode test --models kronos > logs/kronos.log 2>&1 &
 KPID=$!
 
 # CPU: Modelle, Ensemble, Polymarket-Auswertungen
-python s03_models.py --mode valid
-python s03_models.py --mode test
-python s05_ensemble.py --mode valid
-python s05_ensemble.py --mode test
+python s03_models.py --mode valid --refit-months "$REFIT" --skip-touch
+python s03_models.py --mode test --refit-months "$REFIT" --skip-touch
+python s05_ensemble.py --mode valid --refit-months "$REFIT"
+python s05_ensemble.py --mode test --refit-months "$REFIT"
 python s06_polymarket.py --import inputs/pm_dump.json
 python s08_pm_check.py
 python s10_pm_vol.py
