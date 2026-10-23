@@ -45,16 +45,20 @@ DEFAULT = dict(ctx=576, d=128, layers=4, heads=4, ff=512, dropout=0.1, lam_touch
 
 # ---------------- Stufe 0: Daten ----------------
 
-def download(symbols):
+def download(symbols, full=False):
     import s01_download as D
     MULTI.mkdir(parents=True, exist_ok=True)
     for sym in symbols:
-        out = MULTI / f"{sym}.parquet"
+        out = MULTI / (f"{sym}_full.parquet" if full else f"{sym}.parquet")
         if out.exists():
+            continue
+        if full and sym == "BTCUSDT" and (MULTI / "BTCUSDT.parquet").exists():
             continue
         first = "2018-01" if sym == "BTCUSDT" else "2019-01"
         last = "2020-12" if sym == "BTCUSDT" and (C.DATA / "klines_1m.parquet").exists() else "2024-12"
         jobs = [("m", m, f"{D.BASE}/spot/monthly/klines/{sym}/1m/{sym}-1m-{m}.zip") for m in D.months(first, last)]
+        if full and sym != "BTCUSDT":     # bis heute (Monats- + Tagesdateien); nur als Markt-Kanal, Training bleibt < 2025
+            jobs = D.plan_files(f"spot/monthly/klines/{sym}/1m", f"spot/daily/klines/{sym}/1m", lambda t: f"{sym}-1m-{t}", first)
         paths, _ = D.download(jobs, f"multi_{sym}")
         if not paths and sym != "BTCUSDT":
             print(f"  {sym}: keine Daten"); continue
@@ -100,7 +104,7 @@ def fwd_ext(x, n, fn):
     return out
 
 
-def arrays(b):
+def arrays(b, v2=False):
     """Kanäle (N, 13), relative Vola-Ziele (N, 7), Touch-Labels (N, 80), Basis-log-Varianz (N,) – alles kausal."""
     b = b.copy()
     b["close"] = b["close"].ffill()
@@ -122,6 +126,10 @@ def arrays(b):
                   np.log(v1d / v7d), np.log(v7d / v30d), (np.log(v30d) + 13.0) / 2.0,
                   np.log(vol / vm + 1e-6), (2 * b["taker_buy_base"].values - vol) / (vol + 1e-9), np.log(trd / tm + 1e-6),
                   np.sin(hod), np.cos(hod), np.sin(dow), np.cos(dow)], 1)
+    if v2:   # HAR-Kanäle (letzte 1 h / 4 h / EWMA 1 h relativ zur 7-Tage-Vola) + feinere Tageszeit-Saison
+        ew = pd.Series(r2).ewm(halflife=12, min_periods=12).mean().values
+        X = np.c_[X, np.log((roll_mean(r2, 12) + 1e-14) / v7d), np.log((roll_mean(r2, 48) + 1e-14) / v7d),
+                  np.log((ew + 1e-14) / v7d), np.sin(2 * hod), np.cos(2 * hod), np.sin(3 * hod), np.cos(3 * hod)]
     X = np.clip(np.nan_to_num(X), -10, 10).astype(np.float16)
     base = np.log(v7d)
     Yv = np.stack([np.log(fwd_sum(r2, n) / n + 1e-14) - base for n in VH], 1).astype(np.float16)
@@ -137,6 +145,18 @@ def arrays(b):
     end_time = idx + pd.Timedelta(minutes=5) + pd.Timedelta(minutes=5 * max(VH))   # Ziele stehen hier fest
     return dict(idx=idx, X=X, Y=np.nan_to_num(Yv), T=T, valid=valid, end=end_time.values, base=base.astype(np.float32),
                 r2=r2.astype(np.float32))
+
+
+def add_market(assets):
+    """Markt-Kanäle: mittlere relative Vola (letzte 1 h, 1 Tag) aller Coins zum selben Zeitpunkt (nur Vergangenheit)."""
+    cols = {13: "m1h", 3: "m1d"}
+    for c, nm in cols.items():
+        df = pd.concat([pd.Series(a["X"][:, c].astype(np.float32), index=a["idx"]) for a in assets], axis=1)
+        m = df.mean(axis=1, skipna=True)
+        for a in assets:
+            a.setdefault("M", []).append(m.reindex(a["idx"]).fillna(0).values.astype(np.float16))
+    for a in assets:
+        a["X"] = np.c_[a["X"], np.stack(a.pop("M"), 1)].astype(np.float16)
 
 
 # ---------------- Modell ----------------
@@ -167,14 +187,40 @@ class VolFormerP(nn.Module):
         self.touch = nn.Linear(d, len(TH_BARS) * 2 * len(C.THRESHOLDS))
         L = cfg["ctx"]
         self.register_buffer("mask", torch.triu(torch.full((L, L), float("-inf")), 1))
+        self.resid = cfg.get("resid", False)
+        if self.resid:   # HARNet-Idee: linearer HAR-Kopf (per OLS initialisiert) + Transformer lernt nur die Korrektur
+            self.lin_v = nn.Linear(d_in, len(VH))
+            self.lin_t = nn.Linear(d_in, len(TH_BARS) * 2 * len(C.THRESHOLDS))
+            for m in (self.vol, self.touch, self.lin_t):
+                nn.init.zeros_(m.weight); nn.init.zeros_(m.bias)
 
-    def forward(self, x):
+    def forward(self, x, tf=True):
         L = x.shape[1]
+        if self.resid and not tf:
+            return self.lin_v(x), self.lin_t(x)
         h = self.emb(x) + self.pos[:, -L:]
         for b in self.blocks:
             h = b(h, self.mask[:L, :L])
         h = self.norm(h)
+        if self.resid:
+            return self.lin_v(x) + self.vol(h), self.lin_t(x) + self.touch(h)
         return self.vol(h), self.touch(h)
+
+    def har_init(self, sampler, n=60):
+        """Linearen Kopf per OLS auf Vortrainingsdaten setzen; Touch-Bias = log-odds der Trefferquote."""
+        xs, ys, ts = [], [], []
+        for _ in range(n):
+            x, y, t, m = sampler.batch(32)
+            xs.append(x[m]); ys.append(y[m]); ts.append(t[m])
+        X, Y, T = torch.cat(xs).double(), torch.cat(ys).double(), torch.cat(ts).double()
+        A = torch.cat([torch.ones(len(X), 1, device=X.device, dtype=X.dtype), X], 1)
+        B = torch.linalg.lstsq(A.cpu(), Y.cpu()).solution
+        with torch.no_grad():
+            self.lin_v.bias.copy_(B[0].float()); self.lin_v.weight.copy_(B[1:].T.float())
+            p = T.mean(0).clamp(1e-4, 1 - 1e-4)
+            self.lin_t.bias.copy_(torch.log(p / (1 - p)).float())
+        r2 = 1 - ((Y.cpu() - A.cpu() @ B) ** 2).mean() / Y.cpu().var(0).mean()
+        print(f"  HAR-Kopf initialisiert ({len(X):,} Positionen, R² {r2:.3f})")
 
 
 def loss_all(mu, y, lg, t, m, lam):
@@ -242,7 +288,7 @@ def train(model, sampler, cfg, lr, minutes=None, steps=None, es=None, log_every=
     return model
 
 
-def predict_at(model, a, idx_pos, L, bs=256):
+def predict_at(model, a, idx_pos, L, bs=256, tf=True):
     """Ausgabe an der letzten Position von Fenstern, die bei idx_pos enden."""
     model.eval()
     mus, ps = [], []
@@ -251,7 +297,7 @@ def predict_at(model, a, idx_pos, L, bs=256):
         for i in range(0, len(idx_pos), bs):
             w = idx_pos[i:i + bs][:, None] + ar[None, :]
             x = torch.tensor(a["X"][w], dtype=torch.float32, device=DEV)
-            mu, lg = model(x)
+            mu, lg = model(x, tf=tf)
             mus.append(mu[:, -1].float().cpu().numpy()); ps.append(torch.sigmoid(lg[:, -1]).float().cpu().numpy())
     return np.concatenate(mus), np.concatenate(ps)
 
@@ -264,15 +310,23 @@ def main(a):
         cfg.update(ctx=48, d=32, layers=1, heads=2, ff=64, batch=8, pretrain_min=0.3, adapt_steps=30)
     if a.pretrain_min is not None:
         cfg["pretrain_min"] = a.pretrain_min
+    v2 = a.arch == "v2"
+    cfg["resid"] = v2
     print(f"Gerät: {DEV}")
     if not a.no_download:
-        download(a.symbols)
+        download(a.symbols, full=v2)
+        if a.download_only:
+            return
     t0 = time.time()
     assets, names = [], []
     for sym in a.symbols:
-        p = MULTI / f"{sym}.parquet"
+        p = MULTI / (f"{sym}_full.parquet" if v2 and sym != "BTCUSDT" else f"{sym}.parquet")
+        if v2 and sym == "BTCUSDT" and not p.exists():
+            p = MULTI / "BTCUSDT_full.parquet"
         if p.exists():
-            assets.append(arrays(pd.read_parquet(p))); names.append(sym)
+            assets.append(arrays(pd.read_parquet(p), v2)); names.append(sym)
+    if v2:
+        add_market(assets)
     btc = assets[names.index("BTCUSDT")]
     print(f"{len(assets)} Coins, {sum(int(x['valid'].sum()) for x in assets):,} Lernpositionen ({time.time() - t0:.0f}s)")
     d_in = btc["X"].shape[1]
@@ -285,6 +339,8 @@ def main(a):
         model.load_state_dict(torch.load(wpath, map_location=DEV)); print(f"Vortraining geladen: {wpath.name}")
     else:
         smp = Sampler(assets, cfg, PRE_CUTOFF)
+        if v2:
+            model.har_init(smp)
         n_pos = sum(int(o.sum()) for o in smp.ok)
         print(f"Stufe 1: Vortraining {cfg['pretrain_min']} Min. auf {n_pos:,} Positionen (Ziele vor {PRE_CUTOFF.date()})")
         train(model, smp, cfg, cfg["lr"], minutes=cfg["pretrain_min"])
@@ -320,6 +376,19 @@ def main(a):
         pc = pos_btc[i_cal]; pt = pos_btc[te]
         mu_c, p_c = predict_at(model, btc, pc, cfg["ctx"]); mu_t, p_t = predict_at(model, btc, pt, cfg["ctx"])
         dte, dcal = ds.iloc[te], ds.iloc[i_cal]
+        if cfg["resid"]:   # Ablation: nur linearer HAR-Kopf (zeigt, was der Transformer zusätzlich bringt)
+            lc, _ = predict_at(model, btc, pc, cfg["ctx"], tf=False); lt, _ = predict_at(model, btc, pt, cfg["ctx"], tf=False)
+            for k, h in enumerate(C.HORIZONS_H):
+                j = hmap[h]
+                xc = lc[:, j] + btc["base"][pc] - dcal[f"seas_fwd_{h}"].values
+                xt = lt[:, j] + btc["base"][pt] - dte[f"seas_fwd_{h}"].values
+                yc = Yh[i_cal, k]
+                for cm, bb in (("ols", np.linalg.lstsq(np.c_[np.ones(len(yc)), xc], yc, rcond=None)[0]),
+                               ("shift", np.array([np.mean(yc - xc), 1.0]))):
+                    s2 = np.var(yc - bb[0] - bb[1] * xc)
+                    vol_rows.append(pd.DataFrame({"origin": dte.index, "h": h, "model": f"{a.tag}_lin_{cm}",
+                                                  "var": np.asarray(denorm(bb[0] + bb[1] * xt + 0.5 * s2, dte, h)),
+                                                  "y": dte[f"y_rv_{h}"].values}))
         for k, h in enumerate(C.HORIZONS_H):
             j = hmap[h]
             # absolute log-Varianz je Bar, MINUS erwartetes Saisonniveau (das Ziel norm_target ist saisonbereinigt;
@@ -357,6 +426,8 @@ def main(a):
         if len(blk) and len(calp):
             blk, calp = blk[::a.intraday_stride], calp[::a.intraday_stride]
             mb, _ = predict_at(model, btc, blk, cfg["ctx"]); mc, _ = predict_at(model, btc, calp, cfg["ctx"])
+            if cfg["resid"]:
+                lb, _ = predict_at(model, btc, blk, cfg["ctx"], tf=False); lcp, _ = predict_at(model, btc, calp, cfg["ctx"], tf=False)
             r2 = btc["r2"]
             for j, n in enumerate(VH[:3]):
                 y_rel_c = btc["Y"][calp, j].astype(np.float32); y_rel_b = btc["Y"][blk, j].astype(np.float32)
@@ -378,6 +449,10 @@ def main(a):
                 bh, *_ = np.linalg.lstsq(F[calp], y_rel_c, rcond=None)
                 s2h = np.var(y_rel_c - F[calp] @ bh)
                 res["QLIKE HAR-Intraday"] = qlike(y_lin, np.exp(F[blk] @ bh + 0.5 * s2h)).mean()
+                if cfg["resid"]:
+                    bl, *_ = np.linalg.lstsq(np.c_[np.ones(len(calp)), lcp[:, j]], y_rel_c, rcond=None)
+                    s2l = np.var(y_rel_c - bl[0] - bl[1] * lcp[:, j])
+                    res["QLIKE nur HAR-Kopf"] = qlike(y_lin, np.exp(bl[0] + bl[1] * lb[:, j] + 0.5 * s2l)).mean()
                 for nm, base_ in (("letzte Stunde", last1h), ("EWMA 1h", ew), ("7-Tage-Vola", np.ones(len(r2)))):
                     sc_ = np.mean(np.exp(y_rel_c) / np.maximum(base_[calp], 1e-6))       # Skalierung auf Kalibrierzeitraum
                     res[f"QLIKE {nm}"] = qlike(y_lin, np.maximum(base_[blk], 1e-6) * sc_).mean()
@@ -424,6 +499,11 @@ if __name__ == "__main__":
     ap.add_argument("--intraday-stride", type=int, default=1, help="jede n-te 5-Min.-Position im Intraday-Bericht")
     ap.add_argument("--retrain", action="store_true", help="Vortraining neu, auch wenn gespeichert")
     ap.add_argument("--no-download", action="store_true")
+    ap.add_argument("--download-only", action="store_true")
     ap.add_argument("--quick", action="store_true", help=argparse.SUPPRESS)
-    ap.add_argument("--tag", default="vfp")
-    main(ap.parse_args())
+    ap.add_argument("--tag", default=None, help="Standard: vfp (v1) bzw. vfp2 (v2)")
+    ap.add_argument("--arch", choices=["v1", "v2"], default="v1",
+                    help="v2: HAR-Residual-Kopf, HAR-Kanäle, Markt-Kanäle aller Coins (Daten bis heute)")
+    args = ap.parse_args()
+    args.tag = args.tag or ("vfp2" if args.arch == "v2" else "vfp")
+    main(args)
