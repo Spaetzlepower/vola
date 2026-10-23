@@ -46,6 +46,15 @@ Ergebnisse landen in `results/` (`RESULTS_*.md`, CSVs, Prognosen als Parquet).
 5. Ergebnisse ansehen: `results/RESULTS_valid.md`, `results/RESULTS_foundation_valid.md` öffnen
    oder die Auswertungszellen im Notebook ausführen.
 
+## Sicherung wiederherstellen
+
+`inputs/keep.tar.gz` enthält die Foundation-Model-Features (`data/fm_features.parquet`, sonst ~25 Min. GPU),
+die DVOL-Historie und die Reports vom 22.10.2026. Nach dem Klonen:
+```bash
+tar xzf inputs/keep.tar.gz      # -> data/fm_features.parquet, data/dvol_1h.parquet, results/*
+```
+Damit läuft auch `s05_ensemble.py` ohne GPU.
+
 ## Saubere Methodik (wichtig!)
 
 - **valid** (2025) ist dein Spielplatz: Features, Parameter, Modellgrößen hier anpassen.
