@@ -35,28 +35,31 @@ H = C.BARS_PER_HOUR
 HS = C.HORIZONS_H
 HMAX = max(HS)
 DEV = "cuda" if torch.cuda.is_available() else "cpu"
-DEFAULT = dict(L=672, ch=32, levels=8, tab_hidden=128, dropout=0.2, lam_touch=1.0, lr=1e-3, wd=1e-4,
-               batch=256, epochs=40, patience=5, seeds=3)
+DEFAULT = dict(L=672, ch=32, levels=8, tab_hidden=128, dropout=0.2, lam_touch=1.0, lr=3e-4, wd=1e-4,
+               batch=256, epochs=60, patience=5, seeds=3, short=288, levels_short=7)
+# short = Länge des Feinzweigs in 5-Min.-Bars (288 = letzte 24 h; 0 = aus, wie VolNet v1)
 
 
 # ---------------- Daten ----------------
 
-def seq_features():
-    """15-Min.-Kanäle (kausal), normiert mit Statistik vor 2025."""
+def seq_features(freq="15min"):
+    """Sequenz-Kanäle (kausal) in 15-Min.- oder 5-Min.-Auflösung, normiert mit Statistik vor 2025."""
     b = pd.read_parquet(C.DATA / "bars_5m.parquet")
     seas = pd.read_parquet(C.DATA / "seasonality.parquet")["seas"].values
     b["seas"] = seas[(b.index.day_of_week * 288 + b.index.hour * 12 + b.index.minute // 5).values]
-    q = b.resample("15min").agg({"r": "sum", "high": "max", "low": "min", "volume": "sum", "trades": "sum",
-                                 "taker_buy_base": "sum", "seas": "mean"})
-    q["rv"] = (b["r"] ** 2).resample("15min").sum()
+    k = int(pd.Timedelta(freq) / pd.Timedelta("5min"))                 # 5-Min.-Bars je Sequenzschritt
+    per_day = 288 // k
+    q = b.resample(freq).agg({"r": "sum", "high": "max", "low": "min", "volume": "sum", "trades": "sum",
+                              "taker_buy_base": "sum", "seas": "mean"})
+    q["rv"] = (b["r"] ** 2).resample(freq).sum()
     q = q.dropna(subset=["seas"])
     f = pd.DataFrame(index=q.index)
-    f["lrv"] = np.log(q["rv"] / (3 * q["seas"]) + 1e-10)
-    scale = np.sqrt(q["rv"].rolling(96 * 7, min_periods=96).mean()) + 1e-6
+    f["lrv"] = np.log(q["rv"] / (k * q["seas"]) + 1e-10)
+    scale = np.sqrt(q["rv"].rolling(per_day * 7, min_periods=per_day).mean()) + 1e-6
     f["ret"] = (q["r"] / scale).clip(-10, 10)
     f["lrange"] = np.log(np.log(q["high"] / q["low"]) + 1e-6)
-    v30 = q["volume"].rolling(96 * 30, min_periods=96).mean()
-    t30 = q["trades"].rolling(96 * 30, min_periods=96).mean()
+    v30 = q["volume"].rolling(per_day * 30, min_periods=per_day).mean()
+    t30 = q["trades"].rolling(per_day * 30, min_periods=per_day).mean()
     f["lvol"] = np.log(q["volume"] / v30 + 1e-6)
     f["ltr"] = np.log(q["trades"] / t30 + 1e-6)
     f["tbi"] = (2 * q["taker_buy_base"] - q["volume"]) / (q["volume"] + 1e-9)
@@ -111,25 +114,37 @@ class Block(nn.Module):
         return x + y
 
 
+class Branch(nn.Module):
+    """Dilatiertes kausales CNN über eine Sequenz -> letzter Zeitschritt + Attention-Pooling."""
+
+    def __init__(self, c_in, ch, levels, drop):
+        super().__init__()
+        self.inp = nn.Conv1d(c_in, ch, 1)
+        self.tcn = nn.Sequential(*[Block(ch, 2 ** i, drop) for i in range(levels)])
+        self.att = nn.Linear(ch, 1)
+
+    def forward(self, x):
+        z = self.tcn(self.inp(x))
+        w = torch.softmax(self.att(z.transpose(1, 2)).squeeze(-1), 1)
+        return torch.cat([z[:, :, -1], (z * w.unsqueeze(1)).sum(-1)], 1)
+
+
 class VolNet(nn.Module):
     def __init__(self, c_in, tab_in, n_touch, cfg):
         super().__init__()
         ch = cfg["ch"]
-        self.inp = nn.Conv1d(c_in, ch, 1)
-        self.tcn = nn.Sequential(*[Block(ch, 2 ** i, cfg["dropout"]) for i in range(cfg["levels"])])
-        self.att = nn.Linear(ch, 1)
+        c_in = c_in if isinstance(c_in, (list, tuple)) else [c_in]
+        lv = [cfg["levels"], cfg.get("levels_short", 7)]
+        self.branches = nn.ModuleList([Branch(c, ch, lv[min(i, 1)], cfg["dropout"]) for i, c in enumerate(c_in)])
         self.tab = nn.Sequential(nn.Linear(tab_in, cfg["tab_hidden"]), nn.GELU(), nn.Dropout(cfg["dropout"]),
                                  nn.Linear(cfg["tab_hidden"], 64), nn.GELU())
-        self.trunk = nn.Sequential(nn.Linear(2 * ch + 64, 128), nn.GELU(), nn.Dropout(cfg["dropout"]))
+        self.trunk = nn.Sequential(nn.Linear(2 * ch * len(c_in) + 64, 128), nn.GELU(), nn.Dropout(cfg["dropout"]))
         self.vol = nn.Linear(128, len(HS))
         self.touch = nn.Linear(128, n_touch)
 
-    def forward(self, seq, tab):
-        z = self.tcn(self.inp(seq))                       # (B, ch, L)
-        last = z[:, :, -1]
-        w = torch.softmax(self.att(z.transpose(1, 2)).squeeze(-1), 1)
-        pooled = (z * w.unsqueeze(1)).sum(-1)
-        h = self.trunk(torch.cat([last, pooled, self.tab(tab)], 1))
+    def forward(self, seqs, tab):
+        seqs = seqs if isinstance(seqs, (list, tuple)) else [seqs]
+        h = self.trunk(torch.cat([b(x) for b, x in zip(self.branches, seqs)] + [self.tab(tab)], 1))
         return self.vol(h), self.touch(h)
 
 
@@ -144,16 +159,20 @@ def loss_fn(mu, y, logit, t, lam):
 # ---------------- Training ----------------
 
 class Data:
-    def __init__(self, seq, pos, tab, Y, T, cfg):
-        self.seq = torch.tensor(seq.values.T[None], dtype=torch.float32, device=DEV)   # (1, C, N15)
-        self.pos, self.tab, self.Y, self.T, self.L = pos, tab, Y, T, cfg["L"]
-        self.ar = torch.arange(-self.L, 0, device=DEV)
+    """seqs: Liste von (DataFrame, pos, L) – je Zweig eine Sequenz mit eigener Auflösung."""
+
+    def __init__(self, seqs, tab, Y, T):
+        self.s = [(torch.tensor(df.values.T, dtype=torch.float32, device=DEV), pos, torch.arange(-L, 0, device=DEV))
+                  for df, pos, L in seqs]
+        self.tab, self.Y, self.T = tab, Y, T
 
     def batch(self, idx):
-        p = torch.tensor(self.pos[idx], device=DEV)
-        win = (p[:, None] + self.ar[None, :]).clamp(min=0)                               # (B, L)
-        s = self.seq[0][:, win].permute(1, 0, 2)                                          # (B, C, L)
-        return (s, torch.tensor(self.tab[idx], device=DEV),
+        out = []
+        for X, pos, ar in self.s:
+            p = torch.tensor(pos[idx], device=DEV)
+            win = (p[:, None] + ar[None, :]).clamp(min=0)                                  # (B, L)
+            out.append(X[:, win].permute(1, 0, 2))                                          # (B, C, L)
+        return (out, torch.tensor(self.tab[idx], device=DEV),
                 torch.tensor(self.Y[idx], device=DEV), torch.tensor(self.T[idx], device=DEV))
 
 
@@ -205,10 +224,17 @@ def train_one(data, i_fit, i_es, cfg, seed, n_tab, n_touch, c_in):
 def run(mode, cfg, refit_months, tag="nn", quiet=False):
     t0 = time.time()
     ds, feats = load_table()
-    seq = seq_features()
+    seq = seq_features("15min")
     Y, T, ok = targets(ds)
     pos = np.searchsorted(seq.index.values, ds.index.values)          # erster 15-Min.-Bar >= t -> Fenster endet davor
     ok &= pos >= cfg["L"]
+    seqs = [(seq, pos, cfg["L"])]
+    if cfg.get("short", 0):
+        s5 = seq_features("5min")
+        pos5 = np.searchsorted(s5.index.values, ds.index.values)     # erster 5-Min.-Bar >= t -> Fenster endet davor
+        ok &= pos5 >= cfg["short"]
+        seqs.append((s5, pos5, cfg["short"]))
+    c_in = [x[0].shape[1] for x in seqs]
     start, end = (C.VALID_START, C.VALID_END) if mode == "valid" else (C.TEST_START, str(ds.index[-1].date()))
     starts = month_starts(start, end)
     X_all = ds[feats].values.astype(np.float32)
@@ -230,10 +256,10 @@ def run(mode, cfg, refit_months, tag="nn", quiet=False):
         mu_x, sd_x = np.nanmean(X_all[i_fit], 0), np.nanstd(X_all[i_fit], 0) + 1e-6
         tab = np.nan_to_num(np.clip((X_all - mu_x) / sd_x, -10, 10)).astype(np.float32)
         y_mean = np.nanmean(Y[i_fit], 0)                               # Ziele zentrieren (QLIKE ist verschiebungsinvariant)
-        data = Data(seq, pos, tab, np.nan_to_num(Y - y_mean), T, cfg)
+        data = Data(seqs, tab, np.nan_to_num(Y - y_mean), T)
         mus_cal, ps_cal, mus_te, ps_te = [], [], [], []
         for sd in range(cfg["seeds"]):
-            model, best = train_one(data, i_fit, i_es, cfg, C.SEED + sd, tab.shape[1], T.shape[1], seq.shape[1])
+            model, best = train_one(data, i_fit, i_es, cfg, C.SEED + sd, tab.shape[1], T.shape[1], c_in)
             a, b = predict(model, data, i_cal); c, d = predict(model, data, te)
             mus_cal.append(a); ps_cal.append(b); mus_te.append(c); ps_te.append(d)
         mu_cal, p_cal = np.mean(mus_cal, 0) + y_mean, np.mean(ps_cal, 0)
@@ -269,25 +295,25 @@ def run(mode, cfg, refit_months, tag="nn", quiet=False):
     return vp, tp
 
 
-def report(vp, tp, mode, cfg):
-    tag = f"nn_{mode}"
+def report(vp, tp, mode, cfg, model_tag="nn"):
+    tag = f"{model_tag}_{mode}"
     vp.to_parquet(C.RESULTS / f"vol_preds_{tag}.parquet")
     tp.to_parquet(C.RESULTS / f"touch_preds_{tag}.parquet")
     # Vergleich mit Ensemble/Baselines auf denselben Zeitpunkten
     vv, tt_ = [vp], [tp]
-    for f in (f"vol_preds_ens_{mode}.parquet", f"vol_preds_{mode}.parquet"):
+    for f in (f"vol_preds_ens_{mode}.parquet", f"vol_preds_{mode}.parquet", f"vol_preds_nn_{mode}.parquet"):
         p = C.RESULTS / f
         if p.exists():
             x = pd.read_parquet(p)
-            vv.append(x[x["model"].isin(["har", "lgbm", "ens_lgbm_all", "ens_har_all", "ens_lgbm_fm"])])
-    for f in (f"touch_preds_ens_{mode}.parquet", f"touch_preds_{mode}.parquet"):
+            vv.append(x[x["model"].isin(["har", "lgbm", "ens_lgbm_all", "ens_har_all", "ens_lgbm_fm", "nn"])])
+    for f in (f"touch_preds_ens_{mode}.parquet", f"touch_preds_{mode}.parquet", f"touch_preds_nn_{mode}.parquet"):
         p = C.RESULTS / f
         if p.exists():
             x = pd.read_parquet(p)
-            tt_.append(x[x["model"].isin(["har_bm", "ens_har_all_iso", "ens_lgbm_all_iso", "climatology"])])
+            tt_.append(x[x["model"].isin(["har_bm", "ens_har_all_iso", "ens_lgbm_all_iso", "climatology", "nn_bm", "nn_bm_iso"])])
     V = pd.concat(vv, ignore_index=True).drop_duplicates(["origin", "h", "model"])
     Tt = pd.concat(tt_, ignore_index=True).drop_duplicates(["origin", "h", "dir", "thr", "model"])
-    vt = vol_table(V, ref="har") if "har" in V["model"].unique() else vol_table(V, ref="nn")
+    vt = vol_table(V, ref="har") if "har" in V["model"].unique() else vol_table(V, ref=model_tag)
     tt, tpe = touch_table(Tt)
     vt.to_csv(C.RESULTS / f"vol_metrics_{tag}.csv", index=False)
     tt.to_csv(C.RESULTS / f"touch_metrics_{tag}.csv", index=False)
@@ -300,10 +326,10 @@ def report(vp, tp, mode, cfg):
     print(s.drop(columns=["p", "hit"]).sort_values("Brier").round(5).to_string())
 
 
-def score(vp, tp):
+def score(vp, tp, model_tag="nn"):
     """Ein Wert für die Suche: mittleres QLIKE (alle Horizonte) + 10 x mittlerer Brier."""
-    ql = vol_table(vp, ref="nn").groupby("model")["QLIKE"].mean().iloc[0]
-    tt, _ = touch_table(tp[tp["model"] == "nn_bm_iso"])
+    ql = vol_table(vp, ref=model_tag).groupby("model")["QLIKE"].mean().iloc[0]
+    tt, _ = touch_table(tp[tp["model"] == f"{model_tag}_bm_iso"])
     return ql + 10 * tt["Brier"].mean(), ql, tt["Brier"].mean()
 
 
@@ -313,23 +339,24 @@ if __name__ == "__main__":
     ap.add_argument("--refit-months", type=int, default=3)
     ap.add_argument("--search", action="store_true", help="Hyperparameter-Suche (nur mit --mode valid)")
     ap.add_argument("--quick", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--tag", default="nn2", help="Modellname (nn = VolNet v1, nn2 = mit Feinzweig)")
     a = ap.parse_args()
     print(f"Gerät: {DEV}")
-    best_path = C.RESULTS / "volnet_best.json"
+    best_path = C.RESULTS / f"volnet_best_{a.tag}.json"
     cfg = dict(DEFAULT)
     if a.quick:
-        cfg.update(L=96, ch=8, levels=3, epochs=2, seeds=1, tab_hidden=16)
+        cfg.update(L=96, ch=8, levels=3, epochs=2, seeds=1, tab_hidden=16, short=48, levels_short=3)
     if a.search:
         assert a.mode == "valid", "Suche nur auf dem Validierungszeitraum!"
-        grid = [dict(), dict(ch=64), dict(dropout=0.3), dict(L=336), dict(lam_touch=0.3), dict(levels=10, L=1344),
-                dict(lr=3e-4, epochs=60)]
+        grid = [dict(short=0), dict(), dict(short=576, levels_short=8)]          # ohne / 24 h / 48 h Feinzweig
         res = []
         for g in grid:
             c = dict(cfg, **g)
             if a.quick:
-                c.update(L=min(c["L"], 96), ch=min(c["ch"], 8), levels=3, epochs=2, seeds=1)
-            vp, tp = run("valid", dict(c, seeds=1), max(a.refit_months, 6), quiet=True)
-            sc, ql, br = score(vp, tp)
+                c.update(L=min(c["L"], 96), ch=min(c["ch"], 8), levels=3, epochs=2, seeds=1,
+                         short=min(c["short"], 48), levels_short=3)
+            vp, tp = run("valid", dict(c, seeds=1), max(a.refit_months, 6), tag=a.tag, quiet=True)
+            sc, ql, br = score(vp, tp, a.tag)
             res.append({**g, "score": sc, "QLIKE": ql, "Brier": br})
             print(f"  {g or 'Standard'}: Score {sc:.4f} (QLIKE {ql:.4f}, Brier {br:.5f})")
         R = pd.DataFrame(res).sort_values("score")
@@ -341,5 +368,5 @@ if __name__ == "__main__":
     elif best_path.exists() and not a.quick:
         cfg = json.loads(best_path.read_text())
         print(f"Setup aus {best_path.name}: {cfg}")
-    vp, tp = run(a.mode, cfg, a.refit_months)
-    report(vp, tp, a.mode, cfg)
+    vp, tp = run(a.mode, cfg, a.refit_months, tag=a.tag)
+    report(vp, tp, a.mode, cfg, a.tag)

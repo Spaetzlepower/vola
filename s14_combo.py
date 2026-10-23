@@ -14,11 +14,16 @@ from sklearn.isotonic import IsotonicRegression
 import config as C
 from evaluate import barriers, bm_touch, qlike, reliability, touch_table, vol_table, write_report
 
-A, B = "nn", "ens_lgbm_all"
+import argparse
+_ap = argparse.ArgumentParser()
+_ap.add_argument("--a", default="nn", help="Modell A (nn, nn2, vf)")
+_ap.add_argument("--b", default="ens_lgbm_all", help="Modell B")
+_args, _ = _ap.parse_known_args()
+A, B = _args.a, _args.b
 
 
 def load(mode):
-    v = pd.concat([pd.read_parquet(C.RESULTS / f"vol_preds_nn_{mode}.parquet"),
+    v = pd.concat([pd.read_parquet(C.RESULTS / f"vol_preds_{A}_{mode}.parquet"),
                    pd.read_parquet(C.RESULTS / f"vol_preds_ens_{mode}.parquet"),
                    pd.read_parquet(C.RESULTS / f"vol_preds_{mode}.parquet")])
     return v.drop_duplicates(["origin", "h", "model"])
@@ -45,7 +50,7 @@ def main():
             if best is None or ql < best[0]:
                 best = (ql, w, c)
         params[h] = best[1:]
-        print(f"h={h:>3}h: Gewicht VolNet {best[1]:.1f}, Skalierung {best[2]:.3f} (QLIKE 2025 {best[0]:.4f})")
+        print(f"h={h:>3}h: Gewicht {A} {best[1]:.1f}, Skalierung {best[2]:.3f} (QLIKE 2025 {best[0]:.4f})")
         for mode, v in (("valid", vv), ("test", vt)):
             gg, yy = pivot(v, h)
             w, c = params[h]
@@ -55,7 +60,8 @@ def main():
     isos = {}
     for mode in ("valid", "test"):
         vc = pd.concat(rows[mode], ignore_index=True)
-        vc.to_parquet(C.RESULTS / f"vol_preds_combo_{mode}.parquet")
+        vc["model"] = f"combo_{A}"
+        vc.to_parquet(C.RESULTS / f"vol_preds_combo_{A}_{mode}.parquet")
         tps = []
         for h in C.HORIZONS_H:
             s = vc[vc.h == h].set_index("origin")
@@ -70,16 +76,17 @@ def main():
                     tps.append(pd.DataFrame({"origin": s.index, "h": h, "dir": dname, "thr": thr, "model": "combo_iso",
                                              "p": pi[:, j], "hit": hit[:, j].astype(np.int8)}))
         tp = pd.concat(tps, ignore_index=True)
-        tp.to_parquet(C.RESULTS / f"touch_preds_combo_{mode}.parquet")
+        tp["model"] = f"combo_{A}_iso"
+        tp.to_parquet(C.RESULTS / f"touch_preds_combo_{A}_{mode}.parquet")
         V = pd.concat([load(mode), vc])
-        V = V[V["model"].isin(["har", "lgbm", "nn", "ens_lgbm_all", "ens_har_all", "combo"])]
+        V = V[V["model"].isin(["har", "lgbm", A, "ens_lgbm_all", "ens_har_all", f"combo_{A}"])]
         T = pd.concat([tp] + [pd.read_parquet(C.RESULTS / f).query("model in ['nn_bm','nn_bm_iso','ens_har_all_iso','ens_lgbm_all_iso','har_bm']")
-                              for f in (f"touch_preds_nn_{mode}.parquet", f"touch_preds_ens_{mode}.parquet", f"touch_preds_{mode}.parquet")
+                              for f in (f"touch_preds_{A}_{mode}.parquet", f"touch_preds_ens_{mode}.parquet", f"touch_preds_{mode}.parquet")
                               if (C.RESULTS / f).exists()])
         T = T.drop_duplicates(["origin", "h", "dir", "thr", "model"])
         vtab = vol_table(V, ref="har")
         ttab, tpe = touch_table(T)
-        write_report(vtab, ttab, C.RESULTS / f"RESULTS_combo_{mode}.md", f"Kombination VolNet + Ensemble ({mode})",
+        write_report(vtab, ttab, C.RESULTS / f"RESULTS_combo_{A}_{mode}.md", f"Kombination VolNet + Ensemble ({mode})",
                      notes="Gewichte/Skalierung je Horizont nur aus 2025: " + ", ".join(f"{h}h: w={w:.1f}, c={c:.3f}" for h, (w, c) in params.items()))
         print(f"\n=== {mode}")
         print(vtab.sort_values(["h", "QLIKE"])[["h", "model", "QLIKE", "DM_t_vs_har", "DM_p"]].round(4).to_string(index=False))

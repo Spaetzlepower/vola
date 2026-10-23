@@ -23,6 +23,9 @@ später mit den Preisen bei Polymarket.
 | `s12_volnet.py` | Eigenes Modell: Sequenz-CNN + Features, Multi-Task (Vola + Touch), Hyperparameter-Suche auf 2025 | 1–3 Std. (GPU) |
 | `run_volnet.sh` | Suche → Test → Polymarket-Auswertungen mit VolNet | – |
 | `s13_pm_trades.py` | **Realistischer Backtest mit echten Trades** (Einstieg sofort / +5/30/60/300 s) | 5–10 Min. |
+| `s14_combo.py` | Kombination Modell + Ensemble, Gewichte je Horizont nur aus 2025 | 1 Min. |
+| `s15_volformer.py` | **VolFormer**: kleiner Decoder-only-Transformer (Stunden-Patches, Verlust an allen Positionen), von Grund auf trainiert | 30–60 Min. (GPU) |
+| `run_volformer.sh` | Suche → Test → Kombination | – |
 | `evaluate.py` | Metriken (QLIKE, Brier, LogLoss, Diebold-Mariano), Report | – |
 | `analyse.ipynb` | Ablauf + Grafiken (Reliability-Diagramme, Vola-Verlauf) | – |
 | `run_all.sh` | alles nacheinander im Hintergrund | – |
