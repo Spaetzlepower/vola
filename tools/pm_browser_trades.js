@@ -2,7 +2,7 @@
 // Anleitung: Tab https://gamma-api.polymarket.com/events?limit=1 öffnen, F12 -> Konsole, optional vorher:
 //   window.PM_DAYS = 21;  window.PM_WEEKS = 60;     dann dieses Skript einfügen. Dauer ca. 20-60 Min.
 (async () => {
-  const DAYS = (window.PM_DAYS ?? 21), WEEKS = (window.PM_WEEKS ?? 60), TIMEOUT = 20000, PAUSE = 150, TRIES = 3, PAR = 4;
+  const DAYS = (window.PM_DAYS ?? 21), WEEKS = (window.PM_WEEKS ?? 60), TIMEOUT = 25000, PAUSE = 350, TRIES = 5, PAR = 2;
   const MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august",
                   "september", "october", "november", "december"];
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -16,7 +16,7 @@
         const r = await fetch(url, { signal: ctl.signal });
         clearTimeout(timer);
         if (r.status === 400 || r.status === 404) return null;
-        if (r.status === 429) { await sleep(3000 * (i + 1)); continue; }
+        if (r.status === 429) { await sleep(6000 * (i + 1)); continue; }    // gedrosselt -> länger warten
         if (!r.ok) throw new Error("HTTP " + r.status);
         return await r.json();
       } catch (e) {
@@ -84,24 +84,28 @@
   console.log("2/2: Trades laden ...");
   done = 0;
   const slim = (t) => ({ a: t.asset, c: t.conditionId, s: t.side, p: t.price, q: t.size, t: t.timestamp, o: t.outcomeIndex });
+  // Kleine Zeitfenster statt tiefem Blättern (die API liefert bei großen offsets Fehler 500).
+  // Pro Fenster max. 3 Seiten à 1000; ist das Fenster voll, wird es halbiert.
   async function fetchRange(id, start, end, depth) {
     const res = [];
-    for (let off = 0; off <= 10000; off += 1000) {
+    for (let off = 0; off < 3000; off += 1000) {
       const r = await get(`https://data-api.polymarket.com/trades?eventId=${id}&limit=1000&offset=${off}&takerOnly=true&start=${start}&end=${end}`);
-      if (!r || !r.length) return res;
+      await sleep(PAUSE);
+      if (!r) { if (off === 0) return res; break; }
       res.push(...r.map(slim));
       if (r.length < 1000) return res;
-      if (off === 10000 && depth < 6) {               // Kappung erreicht -> Zeitraum halbieren
-        const mid = Math.floor((start + end) / 2);
-        return [...(await fetchRange(id, start, mid, depth + 1)), ...(await fetchRange(id, mid + 1, end, depth + 1))];
-      }
     }
-    return res;
+    if (depth >= 14 || end - start < 60) return res;           // Fenster voll -> halbieren und neu holen
+    const mid = Math.floor((start + end) / 2);
+    return [...(await fetchRange(id, start, mid, depth + 1)), ...(await fetchRange(id, mid + 1, end, depth + 1))];
   }
   await pool(evs, async (e) => {
     const end = Math.floor(Date.parse(e.endDate) / 1000) + 3600;
     const start = Math.max(1, Math.floor(Date.parse(e.startDate || e.endDate) / 1000) - 10 * 86400);
-    const tr = await fetchRange(e.id, start, end, 0);
+    const tr = [];
+    for (let w0 = start; w0 < end; w0 += 6 * 3600) {           // 6-Stunden-Fenster
+      tr.push(...(await fetchRange(e.id, w0, Math.min(w0 + 6 * 3600 - 1, end), 0)));
+    }
     const seen = new Set();
     for (const t of tr) { const k = `${t.a}|${t.t}|${t.p}|${t.q}|${t.s}`; if (!seen.has(k)) { seen.add(k); out.trades.push(t); } }
     if (++done % 25 === 0) console.log(`  ${done}/${evs.length} Events, ${out.trades.length} Trades`);
