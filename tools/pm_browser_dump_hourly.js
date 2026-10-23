@@ -6,9 +6,12 @@
   const MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august",
                   "september", "october", "november", "december"];
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const MAX_MS = (window.PM_MAX_MIN ?? 90) * 60e3, T_START = Date.now();
+  const timeUp = () => Date.now() - T_START > MAX_MS;   // Gesamt-Zeitlimit (window.PM_MAX_MIN, Standard 90 Min.)
   let failures = 0, done = 0;
 
   async function get(url) {
+    if (timeUp()) return null;
     for (let i = 0; i < TRIES; i++) {
       const ctl = new AbortController();
       const timer = setTimeout(() => ctl.abort(), TIMEOUT);
@@ -32,7 +35,7 @@
   async function pool(items, worker) {           // PAR Abfragen gleichzeitig
     let idx = 0;
     const runners = Array.from({ length: PAR }, async () => {
-      while (idx < items.length) { const it = items[idx++]; await worker(it); await sleep(PAUSE); }
+      while (idx < items.length && !timeUp()) { const it = items[idx++]; await worker(it); await sleep(PAUSE); }
     });
     await Promise.all(runners);
   }
@@ -85,6 +88,7 @@
     if (++done % 100 === 0) console.log(`  ${done}/${jobs.length}`);
   });
 
+  if (timeUp()) console.warn(`Zeitlimit erreicht – lade die bis hierhin gesammelten Daten herunter.`);
   const blob = new Blob([JSON.stringify(dump)], { type: "application/json" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob); a.download = "pm_hourly_dump.json";
