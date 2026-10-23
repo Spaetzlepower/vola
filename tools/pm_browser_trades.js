@@ -67,25 +67,6 @@
     markets: (e.markets || []).map((m) => ({ conditionId: m.conditionId, question: m.question, groupItemTitle: m.groupItemTitle,
       clobTokenIds: m.clobTokenIds, outcomes: m.outcomes, outcomePrices: m.outcomePrices, closed: m.closed, endDate: m.endDate })) });
 
-  console.log(`1/2: Events suchen (${slugs.size} Stunden, ${weekly.length} Wochen) ...`);
-  await pool([...slugs], async (s) => {
-    const ev = await get(`https://gamma-api.polymarket.com/events?slug=${s}`);
-    if (ev && ev.length) out.events[s] = keep(ev[0]);
-    if (++done % 100 === 0) console.log(`  ${done}/${slugs.size}`);
-  });
-  for (const cands of weekly) {
-    for (const s of cands) {
-      const ev = await get(`https://gamma-api.polymarket.com/events?slug=${s}`);
-      await sleep(PAUSE);
-      if (ev && ev.length) { out.events[s] = keep(ev[0]); break; }
-    }
-  }
-  const evs = Object.values(out.events);
-  console.log(`  ${evs.length} Events gefunden`);
-
-  // --- Trades je Event; bei > 10.000 Trades in Zeitfenster aufteilen ---
-  console.log("2/2: Trades laden ...");
-  done = 0;
   const slim = (t) => ({ a: t.asset, c: t.conditionId, s: t.side, p: t.price, q: t.size, t: t.timestamp, o: t.outcomeIndex });
   // Kleine Zeitfenster statt tiefem Blättern (die API liefert bei großen offsets Fehler 500).
   // Pro Fenster max. 3 Seiten à 1000; ist das Fenster voll, wird es halbiert.
@@ -102,17 +83,41 @@
     const mid = Math.floor((start + end) / 2);
     return [...(await fetchRange(id, start, mid, depth + 1)), ...(await fetchRange(id, mid + 1, end, depth + 1))];
   }
-  await pool(evs, async (e) => {
-    const end = Math.floor(Date.parse(e.endDate) / 1000) + 3600;
-    const start = Math.max(1, Math.floor(Date.parse(e.startDate || e.endDate) / 1000) - 10 * 86400);
+  let nEv = 0;
+  async function eventTrades(e, hourly) {
+    // Trades SOFORT nach dem Fund laden -> bei Zeitlimit fehlen nur die ältesten Events, nicht alle Trades
+    const end = Math.floor(Date.parse(e.endDate) / 1000) + 600;
+    const start = Math.floor(Date.parse(e.startDate || e.endDate) / 1000) - (hourly ? 3600 : 86400);
+    const step = hourly ? (end - start + 1) : 6 * 3600;          // Stundenmärkte: ein Fenster genügt
     const tr = [];
-    for (let w0 = start; w0 < end; w0 += 6 * 3600) {           // 6-Stunden-Fenster
-      tr.push(...(await fetchRange(e.id, w0, Math.min(w0 + 6 * 3600 - 1, end), 0)));
+    for (let w0 = start; w0 < end && !timeUp(); w0 += step) {
+      tr.push(...(await fetchRange(e.id, w0, Math.min(w0 + step - 1, end), 0)));
     }
     const seen = new Set();
     for (const t of tr) { const k = `${t.a}|${t.t}|${t.p}|${t.q}|${t.s}`; if (!seen.has(k)) { seen.add(k); out.trades.push(t); } }
-    if (++done % 25 === 0) console.log(`  ${done}/${evs.length} Events, ${out.trades.length} Trades`);
+    nEv++;
+  }
+
+  console.log(`Suche ${slugs.size} Stunden- und ${weekly.length} Wochen-Events und lade jeweils sofort die Trades ...`);
+  await pool([...slugs], async (s) => {
+    const ev = await get(`https://gamma-api.polymarket.com/events?slug=${s}`);
+    if (ev && ev.length && Date.parse(ev[0].endDate) < Date.now()) {
+      out.events[s] = keep(ev[0]);
+      await eventTrades(ev[0], true);
+    }
+    if (++done % 50 === 0) console.log(`  ${done}/${slugs.size} Stunden geprüft, ${nEv} Events, ${out.trades.length} Trades ` +
+                                        `(${Math.round((Date.now() - T_START) / 60000)} Min.)`);
   });
+  for (const cands of weekly) {
+    if (timeUp()) break;
+    for (const s of cands) {
+      const ev = await get(`https://gamma-api.polymarket.com/events?slug=${s}`);
+      await sleep(PAUSE);
+      if (ev && ev.length) { out.events[s] = keep(ev[0]); await eventTrades(ev[0], false); break; }
+    }
+    console.log(`  Wochen: ${nEv} Events, ${out.trades.length} Trades`);
+  }
+  const evs = Object.values(out.events);
 
   if (timeUp()) console.warn(`Zeitlimit erreicht – lade die bis hierhin gesammelten Daten herunter.`);
   const blob = new Blob([JSON.stringify(out)], { type: "application/json" });
