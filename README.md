@@ -26,6 +26,8 @@ später mit den Preisen bei Polymarket.
 | `s14_combo.py` | Kombination Modell + Ensemble, Gewichte je Horizont nur aus 2025 | 1 Min. |
 | `s15_volformer.py` | **VolFormer**: kleiner Decoder-only-Transformer (Stunden-Patches, Verlust an allen Positionen), von Grund auf trainiert | 30–60 Min. (GPU) |
 | `run_volformer.sh` | Suche → Test → Kombination | – |
+| `s16_pretrain.py` | **VolFormer-P**: eigenes Vortraining auf ~20 Coins, 5-Min.-Token, Kontext 48 h, Horizonte 15 Min. bis 7 Tage; dann BTC walk-forward | ~1,5 Std. (GPU) |
+| `run_pretrain.sh` | Daten → Vortraining → valid → test → Kombination → `keep5.tar.gz` | – |
 | `evaluate.py` | Metriken (QLIKE, Brier, LogLoss, Diebold-Mariano), Report | – |
 | `analyse.ipynb` | Ablauf + Grafiken (Reliability-Diagramme, Vola-Verlauf) | – |
 | `run_all.sh` | alles nacheinander im Hintergrund | – |
