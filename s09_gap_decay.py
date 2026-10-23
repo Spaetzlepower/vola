@@ -28,6 +28,9 @@ def market_minutes(r, hist, k1, dv, k):
         return None
     h["t"] = pd.to_datetime(h["t"], unit="s", utc=True)
     ps = h.drop_duplicates("t").set_index("t")["p"].astype(float).sort_index()
+    # Vorsichtig: Ein Kurspunkt mit Zeitstempel t gilt erst ab t + 1 Min. als bekannt
+    # (falls Polymarket den Minutenwert am Anfang des Intervalls stempelt).
+    ps.index = ps.index + pd.Timedelta("1min")
     wstart = min(r.start, r.end - pd.Timedelta(days=7))
     lo_t, hi_t = max(ps.index[0], wstart).ceil("1min"), min(ps.index[-1], r.end)
     if hi_t <= lo_t:

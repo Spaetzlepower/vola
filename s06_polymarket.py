@@ -297,6 +297,9 @@ def build_panel(mk, fidelity, k):
     if mk.empty:
         raise SystemExit("Keine abgeschlossenen Polymarket-Wochen im Zeitraum der Binance-Daten.")
     dv = dvol(mk["start"].min() - pd.Timedelta(days=400), mk["end"].max() + pd.Timedelta(hours=2))
+    # Deribit-Stundenkerze mit Zeitstempel ts schließt erst bei ts+1h -> erst dann bekannt (kein Blick in die Zukunft)
+    dv = dv.copy()
+    dv.index = dv.index + pd.Timedelta(hours=1)
     vp = None
     for f in sorted(C.RESULTS.glob("vol_preds_*.parquet")):
         if "foundation" not in f.name and "kronos" not in f.name:

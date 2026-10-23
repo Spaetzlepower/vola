@@ -103,3 +103,17 @@ Lädt vergangene Wochenmärkte „What price will Bitcoin hit …“ (Gamma-/CLO
 berechnet stündlich faire Touch-Wahrscheinlichkeiten und prüft (a) wer den Ausgang besser vorhersagt und
 (b) ob sich der Polymarket-Preis innerhalb von 1/4/24 h Richtung fairer Wert bewegt (Backtest nach Kosten).
 Rohdaten werden in `data/pm/` gecacht. Report: `results/RESULTS_polymarket.md`.
+
+## Kein Blick in die Zukunft – Prüfliste
+
+| Stelle | Regel |
+|---|---|
+| Features (s02) | nur Bars, die **vor** dem Prognosezeitpunkt beginnen (`shift(1)`), Saisonprofil nur aus Daten vor 2025 |
+| Training (s03/s05/s07) | walk-forward, nur Zeitpunkte, deren Zielgröße **vor** Monatsbeginn feststand (Embargo = Horizont) |
+| Kalibrierung (s05) | auf den jüngsten 15 % der Trainingsdaten, mit Embargo, nie auf dem Testmonat |
+| Foundation Models | Kontext endet mit der Stunde **vor** dem Prognosezeitpunkt; Pretraining vor 2026 evtl. mit BTC-Daten → nur Test ab 2026 ist sauber |
+| DVOL (s05/s06/s07/s09) | Stundenwert erst nach Kerzenschluss (+1 h) verwendet |
+| GARCH (s03) | Stundenreturn erst nach Ablauf der Stunde |
+| Binance-Kurs (s06/s09) | Schlusskurs der letzten **abgeschlossenen** Minute vor t |
+| Polymarket-Preis | letzter Kurspunkt ≤ t (s06, Stunde) bzw. Kurspunkt erst ab t+1 Min. (s09); zusätzlich Test „Einstieg 1 h später“ (s08) |
+| Ausgang | aus Binance-1m-Hoch/Tief rekonstruiert, 100 % Übereinstimmung mit Polymarket-Auflösung |
