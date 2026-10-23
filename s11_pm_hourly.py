@@ -98,13 +98,18 @@ def build(mk, d, k1, dv, k, fn):
             continue
         grid = pd.date_range(lo, r.T, freq="1min", inclusive="left")
         pm = ps.reindex(grid, method="ffill", tolerance=pd.Timedelta("15min")).values
+        # Zeitpunkt der letzten echten Preisänderung (Polymarket meldet den Mittelwert aus Bid/Ask jede Minute,
+        # auch wenn sich nichts bewegt; ohne Handel ist das z. B. 0,50 bei Bid 0,01 / Ask 0,99 -> nicht handelbar)
+        chg = ps[ps.diff().fillna(1).abs() > 1e-9]
+        last_chg = pd.Series(chg.index, index=chg.index).reindex(grid, method="ffill")
+        stale = ((grid - pd.DatetimeIndex(last_chg)) / pd.Timedelta("1min")).values
         S = k1["close"].reindex(grid - pd.Timedelta("1min"), method="ffill").values
         if r.T not in k1.index:
             continue
         outcome = float(k1.at[r.T, "close"] > r.strike)                  # Kerze zur Auflösungsminute
         tau = ((r.T + pd.Timedelta("1min") - grid) / pd.Timedelta("1h")).values
         dvt = dv.reindex(grid, method="ffill", tolerance=pd.Timedelta("3h")).values / 100
-        f = pd.DataFrame({"t": grid, "pm": pm, "S": S, "tau": tau, "event": r.event, "strike": r.strike,
+        f = pd.DataFrame({"t": grid, "pm": pm, "stale_min": stale, "S": S, "tau": tau, "event": r.event, "strike": r.strike,
                           "token": r.token, "outcome": outcome, "resolved_api": r.resolved_api})
         f["fv_dvol"] = digital(S, r.strike, (dvt * k) ** 2 * tau / 8760)
         if fn is not None:
@@ -147,6 +152,25 @@ def main(a):
             print(f"  {m}: Prognosen decken nur {cov:.0%} des Zeitraums ab -> nächstes Modell")
     print(f"Modell für fairen Wert: {model or 'keins (nur DVOL)'}")
     P = build(mk, d, k1, dv, k, fn)
+    n_all = len(P)
+    flat50 = (P["pm"] - 0.5).abs() < 0.006
+    active = (P["stale_min"] <= a.max_stale) & ~(flat50 & (P["stale_min"] > 1))
+    P = P[active].copy()
+    # Plausibilität über die Stufen eines Events: P(S_T > K) muss mit K fallen. Isotone (fallende) Anpassung je
+    # (Event, Minute); Preise, die > 0.15 davon abweichen, sind Schein-Mittelwerte (nur Marktdaten, kein Modell).
+    from sklearn.isotonic import IsotonicRegression
+    dev = np.zeros(len(P))
+    iso = IsotonicRegression(increasing=False, out_of_bounds="clip")
+    for _, g in P.groupby(["event", "t"], sort=False):
+        if len(g) >= 3:
+            o = np.argsort(g["strike"].values)
+            fit = iso.fit_transform(g["strike"].values[o], g["pm"].values[o])
+            dev[P.index.get_indexer(g.index[o])] = np.abs(g["pm"].values[o] - fit)
+    n_act = len(P)
+    P = P[dev <= 0.15].copy()
+    print(f"Plausibilitätsprüfung über Stufen: {n_act - len(P):,} weitere Scheinpreise entfernt")
+    print(f"Aktive Preise: {len(P):,} von {n_all:,} ({len(P) / n_all:.0%}); entfernt: eingefrorene (> {a.max_stale} Min. "
+          f"unverändert) und Schein-Mittelwerte um 0,50")
     P["day"] = P["t"].dt.floor("1D")
     P.to_parquet(C.RESULTS / "pm_hourly_panel.parquet")
     agree = P.groupby("token")[["outcome", "resolved_api"]].first().dropna()
@@ -154,6 +178,10 @@ def main(a):
     L = ["# Stündliche Polymarket-Märkte „Bitcoin above K at hh:00 ET“", "",
          f"{P['event'].nunique()} Events, {P['token'].nunique()} Stufen, {len(P):,} Minuten-Beobachtungen. "
          f"Modell: {model}. DVOL-Faktor k = {k:.3f}. Kosten {a.cost} je Anteil (Hin+Rück; bis Auflösung halb).",
+         f"Nur **aktive, plausible** Preise: in den letzten {a.max_stale} Min. verändert, keine festen 0,50, monoton über "
+         f"die Stufen (Abweichung ≤ 0,15) "
+         f"({len(P):,} von {n_all:,} Minuten). Polymarket liefert Mittelwerte aus Bid/Ask – echte Ausführungspreise "
+         f"liegen um den halben Spread schlechter (Kosten-Annahme) und sind ohne Orderbuch-Daten nicht prüfbar.",
          f"Ausgang (Binance-Rekonstruktion) stimmt bei {(agree.outcome == agree.resolved_api).mean():.1%} von {len(agree)} "
          f"Stufen mit der Polymarket-Auflösung überein.", ""]
 
@@ -263,4 +291,5 @@ if __name__ == "__main__":
     ap.add_argument("--th", type=float, nargs="+", default=[0.05, 0.10])
     ap.add_argument("--vth", type=float, nargs="+", default=[0.1, 0.25, 0.5])
     ap.add_argument("--model", default="ens_lgbm_all")
+    ap.add_argument("--max-stale", type=float, default=5, help="Preis gilt nur als aktiv, wenn in den letzten N Min. verändert")
     main(ap.parse_args())
