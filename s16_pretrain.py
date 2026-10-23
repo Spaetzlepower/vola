@@ -302,6 +302,8 @@ def main(a):
     nthr = len(C.THRESHOLDS)
     hmap = {h: VH.index(h * 12) for h in C.HORIZONS_H}
     vol_rows, touch_rows, intra, ipred = [], [], [], []
+    cm_path = C.RESULTS / f"{a.tag}_calmode.json"
+    calmode = json.loads(cm_path.read_text()) if (a.mode == "test" and cm_path.exists()) else None
     for bi in range(0, len(starts), a.refit_months):
         ms = starts[bi]
         me = starts[bi + a.refit_months] if bi + a.refit_months < len(starts) else pd.Timestamp(end, tz="UTC") + pd.Timedelta("1D")
@@ -320,14 +322,21 @@ def main(a):
         dte, dcal = ds.iloc[te], ds.iloc[i_cal]
         for k, h in enumerate(C.HORIZONS_H):
             j = hmap[h]
-            xc = mu_c[:, j] + btc["base"][pc]; xt = mu_t[:, j] + btc["base"][pt]   # absolute log-Varianz je Bar
+            # absolute log-Varianz je Bar, MINUS erwartetes Saisonniveau (das Ziel norm_target ist saisonbereinigt;
+            # ohne diesen Abzug würde die Tageszeit-Saison doppelt gezählt)
+            xc = mu_c[:, j] + btc["base"][pc] - dcal[f"seas_fwd_{h}"].values
+            xt = mu_t[:, j] + btc["base"][pt] - dte[f"seas_fwd_{h}"].values
             yc = Yh[i_cal, k]
             A = np.c_[np.ones(len(yc)), xc]
             beta, *_ = np.linalg.lstsq(A, yc, rcond=None)
-            s2 = np.var(yc - A @ beta)
-            var_t = np.asarray(denorm(beta[0] + beta[1] * xt + 0.5 * s2, dte, h))
-            var_c = np.asarray(denorm(beta[0] + beta[1] * xc + 0.5 * s2, dcal, h))
-            vol_rows.append(pd.DataFrame({"origin": dte.index, "h": h, "model": a.tag, "var": var_t, "y": dte[f"y_rv_{h}"].values}))
+            var_ = {}
+            for cm, bb in (("ols", beta), ("shift", np.array([np.mean(yc - xc), 1.0]))):   # shift: Steigung 1, nur Niveau
+                s2 = np.var(yc - A @ bb)
+                var_[cm] = (np.asarray(denorm(bb[0] + bb[1] * xt + 0.5 * s2, dte, h)),
+                            np.asarray(denorm(bb[0] + bb[1] * xc + 0.5 * s2, dcal, h)))
+                vol_rows.append(pd.DataFrame({"origin": dte.index, "h": h, "model": f"{a.tag}_{cm}", "var": var_[cm][0],
+                                              "y": dte[f"y_rv_{h}"].values}))
+            var_t, var_c = var_[calmode.get(str(h), "ols")] if calmode else var_["ols"]
             touch_rows.append(touch_long(dte, var_t, h, f"{a.tag}_bm"))
             for jj, dname in enumerate(("up", "dn")):
                 col = slice((2 * k + jj) * nthr, (2 * k + jj + 1) * nthr)
@@ -361,6 +370,14 @@ def main(a):
                 y_lin = np.exp(y_rel_b)
                 res = {"Horizont": f"{n * 5} Min.", "Block": f"{ms:%Y-%m}", "n": len(blk),
                        "QLIKE VolFormer-P": qlike(y_lin, f_model).mean()}
+                # Starker Vergleich: HAR-Intraday (letzte Stunde, EWMA, 1-Tag/7-Tage, Tageszeit-Saison), OLS auf denselben 30 Tagen
+                hod = btc["X"][:, 9:11].astype(np.float32)
+                ang = np.arctan2(hod[:, 0], hod[:, 1])
+                F = np.c_[np.ones(len(r2)), np.log(np.maximum(last1h, 1e-6)), np.log(np.maximum(ew, 1e-6)),
+                          btc["X"][:, 3].astype(np.float32), hod, np.sin(2 * ang), np.cos(2 * ang), np.sin(3 * ang), np.cos(3 * ang)]
+                bh, *_ = np.linalg.lstsq(F[calp], y_rel_c, rcond=None)
+                s2h = np.var(y_rel_c - F[calp] @ bh)
+                res["QLIKE HAR-Intraday"] = qlike(y_lin, np.exp(F[blk] @ bh + 0.5 * s2h)).mean()
                 for nm, base_ in (("letzte Stunde", last1h), ("EWMA 1h", ew), ("7-Tage-Vola", np.ones(len(r2)))):
                     sc_ = np.mean(np.exp(y_rel_c) / np.maximum(base_[calp], 1e-6))       # Skalierung auf Kalibrierzeitraum
                     res[f"QLIKE {nm}"] = qlike(y_lin, np.maximum(base_[blk], 1e-6) * sc_).mean()
@@ -369,6 +386,20 @@ def main(a):
                                            "var": f_model * np.exp(btc["base"][blk]) * n, "y": y_lin * np.exp(btc["base"][blk]) * n}))
         print(f"  Block ab {ms:%Y-%m}: BTC-Weitertraining bis {cal_start.date()}, test {len(te):,} Stunden ({time.time() - t0:.0f}s)")
     vp, tp = pd.concat(vol_rows, ignore_index=True), pd.concat(touch_rows, ignore_index=True)
+    if a.mode == "valid":       # Kalibrierart je Horizont NUR auf 2025 wählen; Test übernimmt sie
+        calmode = {}
+        for h in C.HORIZONS_H:
+            g = vp[vp.h == h]
+            ql = {cm: qlike(g[g.model == f"{a.tag}_{cm}"]["y"].values, g[g.model == f"{a.tag}_{cm}"]["var"].values).mean()
+                  for cm in ("ols", "shift")}
+            calmode[str(h)] = min(ql, key=ql.get)
+        cm_path.write_text(json.dumps(calmode))
+        print(f"Kalibrierart je Horizont (2025): {calmode}")
+        # Hauptmodell für valid ebenfalls mit gewählter Art (Touch oben nutzte 'ols' – nur Vola-Zeilen ersetzen)
+    if calmode is None:
+        calmode = {str(h): "ols" for h in C.HORIZONS_H}
+    main_rows = [vp[(vp.h == h) & (vp.model == f"{a.tag}_{calmode[str(h)]}")].assign(model=a.tag) for h in C.HORIZONS_H]
+    vp = pd.concat([vp] + main_rows, ignore_index=True)
     report(vp, tp, a.mode, cfg, a.tag)
     if intra:
         I = pd.DataFrame(intra)
