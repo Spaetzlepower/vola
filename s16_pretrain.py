@@ -143,7 +143,7 @@ def arrays(b, v2=False):
     T = np.concatenate(Tl, 1).astype(np.uint8)
     valid = np.isfinite(Yv.astype(np.float32)).all(1) & (np.arange(len(b)) >= 8640)
     end_time = idx + pd.Timedelta(minutes=5) + pd.Timedelta(minutes=5 * max(VH))   # Ziele stehen hier fest
-    return dict(idx=idx, X=X, Y=np.nan_to_num(Yv), T=T, valid=valid, end=end_time.values, base=base.astype(np.float32),
+    return dict(idx=idx, X=X, Y=np.nan_to_num(Yv), Yok=np.isfinite(Yv.astype(np.float32)), T=T, valid=valid, end=end_time.values, base=base.astype(np.float32),
                 r2=r2.astype(np.float32))
 
 
@@ -421,7 +421,8 @@ def main(a):
                                                         "p": iso.predict(ptest[:, m_]), "hit": hit_t[:, m_].astype(np.int8)}))
         # Intraday: jede 5. Minute im Block, Horizonte 15/30/60 Min. (relative Ziele, Kalibrierung auf den letzten 30 Tagen vor Block)
         bi_idx = btc["idx"]
-        blk = np.flatnonzero((bi_idx >= ms) & (bi_idx < me) & btc["valid"])
+        # Vorhersage für ALLE Zeitpunkte im Block (auch die letzten Tage ohne 7-Tage-Ziel); Bewertung je Horizont nur mit Ziel
+        blk = np.flatnonzero((bi_idx >= ms) & (bi_idx < me) & (np.arange(len(bi_idx)) >= max(8640, cfg["ctx"])))
         calp = np.flatnonzero((bi_idx >= ms - pd.Timedelta(days=37)) & (bi_idx < ms - pd.Timedelta(days=7)) & btc["valid"])
         if len(blk) and len(calp):
             blk, calp = blk[::a.intraday_stride], calp[::a.intraday_stride]
@@ -438,9 +439,11 @@ def main(a):
                 # Vergleich: letzte Stunde (12 Bars) bzw. EWMA (Halbwertszeit 1 h), jeweils relativ zur 7-Tage-Vola, kalibriert
                 last1h = pd.Series(r2).rolling(12).mean().values / np.exp(btc["base"])
                 ew = pd.Series(r2).ewm(halflife=12).mean().values / np.exp(btc["base"])
-                y_lin = np.exp(y_rel_b)
-                res = {"Horizont": f"{n * 5} Min.", "Block": f"{ms:%Y-%m}", "n": len(blk),
-                       "QLIKE VolFormer-P": qlike(y_lin, f_model).mean()}
+                okj = btc["Yok"][blk, j]
+                y_lin = np.where(okj, np.exp(y_rel_b), np.nan)
+                Q = lambda f_: qlike(y_lin[okj], np.asarray(f_)[okj]).mean()
+                res = {"Horizont": f"{n * 5} Min.", "Block": f"{ms:%Y-%m}", "n": int(okj.sum()),
+                       "QLIKE VolFormer-P": Q(f_model)}
                 # Starker Vergleich: HAR-Intraday (letzte Stunde, EWMA, 1-Tag/7-Tage, Tageszeit-Saison), OLS auf denselben 30 Tagen
                 hod = btc["X"][:, 9:11].astype(np.float32)
                 ang = np.arctan2(hod[:, 0], hod[:, 1])
@@ -448,14 +451,14 @@ def main(a):
                           btc["X"][:, 3].astype(np.float32), hod, np.sin(2 * ang), np.cos(2 * ang), np.sin(3 * ang), np.cos(3 * ang)]
                 bh, *_ = np.linalg.lstsq(F[calp], y_rel_c, rcond=None)
                 s2h = np.var(y_rel_c - F[calp] @ bh)
-                res["QLIKE HAR-Intraday"] = qlike(y_lin, np.exp(F[blk] @ bh + 0.5 * s2h)).mean()
+                res["QLIKE HAR-Intraday"] = Q(np.exp(F[blk] @ bh + 0.5 * s2h))
                 if cfg["resid"]:
                     bl, *_ = np.linalg.lstsq(np.c_[np.ones(len(calp)), lcp[:, j]], y_rel_c, rcond=None)
                     s2l = np.var(y_rel_c - bl[0] - bl[1] * lcp[:, j])
-                    res["QLIKE nur HAR-Kopf"] = qlike(y_lin, np.exp(bl[0] + bl[1] * lb[:, j] + 0.5 * s2l)).mean()
+                    res["QLIKE nur HAR-Kopf"] = Q(np.exp(bl[0] + bl[1] * lb[:, j] + 0.5 * s2l))
                 for nm, base_ in (("letzte Stunde", last1h), ("EWMA 1h", ew), ("7-Tage-Vola", np.ones(len(r2)))):
                     sc_ = np.mean(np.exp(y_rel_c) / np.maximum(base_[calp], 1e-6))       # Skalierung auf Kalibrierzeitraum
-                    res[f"QLIKE {nm}"] = qlike(y_lin, np.maximum(base_[blk], 1e-6) * sc_).mean()
+                    res[f"QLIKE {nm}"] = Q(np.maximum(base_[blk], 1e-6) * sc_)
                 intra.append(res)
                 ipred.append(pd.DataFrame({"time": bi_idx[blk] + pd.Timedelta(minutes=5), "minutes": n * 5,
                                            "var": f_model * np.exp(btc["base"][blk]) * n, "y": y_lin * np.exp(btc["base"][blk]) * n}))

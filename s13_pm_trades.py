@@ -125,6 +125,38 @@ def main(a):
                     e = ((tr["time"] - orig) / pd.Timedelta("1h")).values
                     var_src[m] = fn(orig, tau_h + e) - fn(orig, e)
                     break
+    # 5-Minuten-Prognosen (VolFormer-P): letzte Prognose mit Zeitstempel <= Trade (max. 10 Min. alt),
+    # kumulierte Varianz V(m) aus 15/30/60 Min. stückweise linear, danach mit der 60-Min.-Rate fortgesetzt;
+    # Varianz bis Auflösung = V(tau + e) - V(e), e = Alter der Prognose. Nur Stundenmärkte.
+    for tag in a.intraday:
+        fs = [C.RESULTS / f"vol_preds_{tag}_intraday_{m}.parquet" for m in ("test", "valid")]
+        fs = [f for f in fs if f.exists()]
+        if not fs:
+            continue
+        ip = pd.concat([pd.read_parquet(f) for f in fs]).pivot_table(index="time", columns="minutes", values="var").dropna().sort_index()
+        ip.index = pd.DatetimeIndex(ip.index).tz_convert("UTC") if ip.index.tz is not None else pd.DatetimeIndex(ip.index).tz_localize("UTC")
+        tt = tr["time"].reset_index(drop=True)
+        order = np.argsort(sec(tt))
+        mm = pd.merge_asof(pd.DataFrame({"time": tt.iloc[order].reset_index(drop=True).astype("datetime64[ns, UTC]"), "i": order}),
+                           ip.reset_index().rename(columns={"time": "ptime"}).astype({"ptime": "datetime64[ns, UTC]"}), left_on="time", right_on="ptime",
+                           direction="backward", tolerance=pd.Timedelta("10min")).sort_values("i")
+        e = ((mm["time"] - mm["ptime"]) / pd.Timedelta("1min")).values
+        knots = np.array([0.0, 15.0, 30.0, 60.0])
+        def V(m):
+            vals = np.stack([np.zeros(len(mm)), mm[15].values, mm[30].values, mm[60].values], 1)
+            out = np.empty(len(mm))
+            for i_ in range(4 - 1):
+                lo, hi = knots[i_], knots[i_ + 1]
+                sel = (m >= lo) & (m <= hi)
+                out[sel] = vals[sel, i_] + (vals[sel, i_ + 1] - vals[sel, i_]) * (m[sel] - lo) / (hi - lo)
+            big = m > 60
+            out[big] = vals[big, 3] * m[big] / 60.0
+            return out
+        tau_m = tau_h * 60.0
+        v = V(tau_m + e) - V(e)
+        v[(tr["kind"].values != "hour") | ~np.isfinite(v)] = np.nan
+        var_src[f"{tag}_5m"] = v
+        print(f"5-Min.-Prognosen {tag}: {np.isfinite(v).sum():,} Stunden-Trades abgedeckt")
     S, K = tr["S"].values, tr["strike"].values
     for name, var in var_src.items():
         sig = np.sqrt(np.maximum(var, 1e-12))
@@ -135,6 +167,10 @@ def main(a):
     tr = tr.dropna(subset=["S", "outcome"]).sort_values(["market", "time"]).reset_index(drop=True)
     tr["day"] = tr["time"].dt.floor("1D")
     fvs = [c for c in tr.columns if c.startswith("fv_")]
+    if a.common:   # fairer Vergleich: Stundenmärkte nur dort, wo ALLE Quellen einen Wert haben
+        hr = tr["kind"] == "hour"
+        tr = tr[~hr | tr.loc[:, fvs].notna().all(1)].reset_index(drop=True)
+        print(f"Gemeinsame Stichprobe: {(tr.kind == 'hour').sum():,} Stunden-Trades")
 
     L = ["# Backtest mit echten Polymarket-Trades", "",
          f"{len(tr):,} Taker-Trades, {tr['slug'].nunique()} Events. Menge je Papier-Trade = min(Trade-Menge, {a.cap}). "
@@ -230,5 +266,7 @@ if __name__ == "__main__":
     ap.add_argument("--cap", type=float, default=100, help="max. Anteile je Papier-Trade")
     ap.add_argument("--fee", type=float, default=0.0, help="Gebühr je Anteil (absolut)")
     ap.add_argument("--model", default="")
+    ap.add_argument("--intraday", nargs="*", default=["vfp2", "vfp"], help="Tags der 5-Min.-Prognosen (s16)")
+    ap.add_argument("--common", action="store_true", help="nur Stunden-Trades, für die alle Quellen Werte haben")
     ap.add_argument("--window", type=float, default=900, help="Suchfenster (s) für den nächsten Trade beim verzögerten Einstieg")
     main(ap.parse_args())
