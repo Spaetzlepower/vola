@@ -310,6 +310,9 @@ def main(a):
         cfg.update(ctx=48, d=32, layers=1, heads=2, ff=64, batch=8, pretrain_min=0.3, adapt_steps=30)
     if a.pretrain_min is not None:
         cfg["pretrain_min"] = a.pretrain_min
+    for k_ in ("d", "layers", "heads", "ff", "ctx", "batch"):    # Größe von außen setzen (z. B. kleines Modell)
+        if getattr(a, k_, None) is not None:
+            cfg[k_] = getattr(a, k_)
     v2 = a.arch == "v2"
     cfg["resid"] = v2
     print(f"Gerät: {DEV}")
@@ -503,6 +506,8 @@ if __name__ == "__main__":
     ap.add_argument("--retrain", action="store_true", help="Vortraining neu, auch wenn gespeichert")
     ap.add_argument("--no-download", action="store_true")
     ap.add_argument("--download-only", action="store_true")
+    for k_ in ("d", "layers", "heads", "ff", "ctx", "batch"):
+        ap.add_argument(f"--{k_}", type=int, default=None)
     ap.add_argument("--quick", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--tag", default=None, help="Standard: vfp (v1) bzw. vfp2 (v2)")
     ap.add_argument("--arch", choices=["v1", "v2"], default="v1",
