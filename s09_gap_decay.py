@@ -106,6 +106,7 @@ def main(a):
                 valid = ok_e & (e > 0.001) & (e < 0.999)
                 rows.append(pd.DataFrame({
                     "th": th, "lag": lag, "event": r.event, "market_id": r.market_id, "valid": valid,
+                    "dir": r.dir, "side": np.where(side > 0, "Yes kaufen", "No kaufen"),
                     "pnl_60": np.where(valid & ok_x, side * (x60 - e) - a.cost, np.nan),
                     "pnl_end": np.where(valid, side * (df["outcome"].iloc[0] - e) - a.cost / 2, np.nan),
                     "rest_gap": np.where(valid, rem, np.nan), "gap0": np.abs(gap[idx]),
@@ -131,6 +132,16 @@ def main(a):
               "Meldungen = vermutlich nur fehlende Daten, nicht handelbar", "",
               g0.groupby("Kursmeldung vor", observed=True).agg(n=("pnl_60", "size"), PnL60=("pnl_60", "mean"),
                                                                PnL_Ende=("pnl_end", "mean")).round(4).to_markdown(), ""]
+    # Woher kommt der Gewinn bei Halten bis Auflösung? (Reaktion 60 Min. = vorsichtig)
+    g60 = R[(R["lag"] == 60) & R["pnl_end"].notna()]
+    if len(g60):
+        L += ["## Halten bis Auflösung, Reaktion 60 Min.: nach Richtung und Seite", "",
+              "Kommt der Gewinn fast nur aus einer Kombination (z. B. 'No kaufen' auf Stufen darüber in einer fallenden Phase), "
+              "ist es eher der Kurstrend der wenigen Wochen als ein dauerhafter Effekt.", "",
+              g60.groupby(["th", "dir", "side"]).agg(n=("pnl_end", "size"), PnL=("pnl_end", "mean"),
+                                                    Treffer=("pnl_end", lambda x: (x > 0).mean())).round(4).to_markdown(), "",
+              "**Je Woche (Schwelle 0.10)**", "",
+              g60[g60["th"] == 0.10].groupby("event").agg(n=("pnl_end", "size"), PnL=("pnl_end", "mean")).round(4).to_markdown(), ""]
     L += ["## Lesehilfe", "",
           "- Fällt der PnL schon bei 1–2 Min. Reaktion auf ~0 → nur für schnelle Bots nutzbar.",
           "- Bleibt er bei 5–15 Min. deutlich positiv (t > 2) → mit einem einfachen automatisierten Ansatz machbar.",
