@@ -29,7 +29,7 @@ except Exception:
 print(n)
 PY
 )
-export OMP_NUM_THREADS=$CPUS MKL_NUM_THREADS=$CPUS OPENBLAS_NUM_THREADS=$CPUS
+export OMP_NUM_THREADS=$CPUS MKL_NUM_THREADS=$CPUS OPENBLAS_NUM_THREADS=$CPUS PYTHONUNBUFFERED=1
 echo "Kerne laut nproc: $(nproc), erlaubt: $CPUS -> genutzt: $CPUS Threads; Neu-Training alle $REFIT Monate"
 
 # GPU nebenher: Kronos auf dem Testzeitraum (eigenes Log; nutzt gespeicherte Ergebnisse, falls vorhanden)

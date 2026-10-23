@@ -5,7 +5,7 @@ set -e
 cd "$(dirname "$0")"
 mkdir -p logs
 CPUS=$(python -c "import os;print(len(os.sched_getaffinity(0)))")
-export OMP_NUM_THREADS=$CPUS MKL_NUM_THREADS=$CPUS
+export OMP_NUM_THREADS=$CPUS MKL_NUM_THREADS=$CPUS PYTHONUNBUFFERED=1
 echo "=== $(date) VolNet: Hyperparameter-Suche auf 2025"
 python s12_volnet.py --mode valid --search
 echo "=== $(date) VolNet: Test 2026 (einmalig, bestes Setup aus der Suche)"
