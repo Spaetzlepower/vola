@@ -69,7 +69,7 @@ def main(a):
     W["iv_dn"] = implied_ann_vol(D["pm"].values, D["b"].values, D["T_h"].values)
     W["iv_pm"] = (W["iv_up"] + W["iv_dn"]) / 2
     W["rv_rest"] = realized_remaining(P, W)
-    models = [m for m in vp["model"].unique() if m in ("har", "lgbm") or m.startswith("ens_")]
+    models = [m for m in vp["model"].unique() if m in ("har", "lgbm", "nn") or m.startswith("ens_")]
     print(f"{len(W):,} Paare aus {W['event'].nunique()} Wochen; Modelle: {models}")
 
     L = ["# Vola-Trade auf Polymarket (Paar: nächste Stufe darüber + darunter)", "",

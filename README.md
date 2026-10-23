@@ -20,6 +20,8 @@ später mit den Preisen bei Polymarket.
 | `s09_gap_decay.py` | Minutendaten: wie schnell schließt sich eine Lücke? | 5–15 Min. |
 | `s10_pm_vol.py` | Vola-Trade auf Polymarket: Paar über/unter dem Kurs, nach 1/4/24 h schließen | 2–5 Min. |
 | `s11_pm_hourly.py` | Stündliche Märkte „Bitcoin above K at hh ET“: Kalibrierung, Lücken-Handel, Digital-Strangle | 5–15 Min. |
+| `s12_volnet.py` | Eigenes Modell: Sequenz-CNN + Features, Multi-Task (Vola + Touch), Hyperparameter-Suche auf 2025 | 1–3 Std. (GPU) |
+| `run_volnet.sh` | Suche → Test → Polymarket-Auswertungen mit VolNet | – |
 | `evaluate.py` | Metriken (QLIKE, Brier, LogLoss, Diebold-Mariano), Report | – |
 | `analyse.ipynb` | Ablauf + Grafiken (Reliability-Diagramme, Vola-Verlauf) | – |
 | `run_all.sh` | alles nacheinander im Hintergrund | – |

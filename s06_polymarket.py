@@ -307,7 +307,7 @@ def build_panel(mk, fidelity, k):
     interps = {}
     if vp is not None:
         vp = vp.drop_duplicates(["origin", "h", "model"])
-        ens = sorted(m for m in vp["model"].unique() if m.startswith("ens_") and m != "ens_har")
+        ens = sorted(m for m in vp["model"].unique() if (m.startswith("ens_") and m != "ens_har") or m == "nn")
         for m in ["har", "lgbm"] + ens:
             fn = model_var_interp(vp, m)
             if fn:
