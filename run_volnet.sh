@@ -13,5 +13,6 @@ python s12_volnet.py --mode test
 # Polymarket-Auswertungen mit VolNet als zusätzlichem fairen Wert neu rechnen
 python s10_pm_vol.py
 [ -f inputs/pm_hourly_dump.json ] && python s11_pm_hourly.py --model nn || true
+[ -f inputs/pm_trades.json ] && python s13_pm_trades.py || echo "(keine Trades -> s13 übersprungen)"
 tar czf keep3.tar.gz results/*.md results/*.csv results/volnet_best.json data/fm_features.parquet data/dvol_1h.parquet
 echo "=== $(date) FERTIG. Sicherung: keep3.tar.gz"

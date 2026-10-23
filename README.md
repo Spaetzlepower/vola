@@ -22,6 +22,7 @@ später mit den Preisen bei Polymarket.
 | `s11_pm_hourly.py` | Stündliche Märkte „Bitcoin above K at hh ET“: Kalibrierung, Lücken-Handel, Digital-Strangle | 5–15 Min. |
 | `s12_volnet.py` | Eigenes Modell: Sequenz-CNN + Features, Multi-Task (Vola + Touch), Hyperparameter-Suche auf 2025 | 1–3 Std. (GPU) |
 | `run_volnet.sh` | Suche → Test → Polymarket-Auswertungen mit VolNet | – |
+| `s13_pm_trades.py` | **Realistischer Backtest mit echten Trades** (Einstieg sofort / +5/30/60/300 s) | 5–10 Min. |
 | `evaluate.py` | Metriken (QLIKE, Brier, LogLoss, Diebold-Mariano), Report | – |
 | `analyse.ipynb` | Ablauf + Grafiken (Reliability-Diagramme, Vola-Verlauf) | – |
 | `run_all.sh` | alles nacheinander im Hintergrund | – |
